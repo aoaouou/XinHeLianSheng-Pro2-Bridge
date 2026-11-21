@@ -3855,7 +3855,14 @@ public sealed partial class Pro2BleInputSource :
                         ordinaryRumbleHold.RefreshSuperseded();
                         continue;
                     }
-                    if (queued.GeneratedKind is "hd_hold" or "hd_hold_stop" &&
+                    // Only a live keep-alive needs the current-state gate. An
+                    // hd_hold_stop is generated exactly when the hold state was
+                    // cleared (CancelExpired), so IsCurrent() is false by design;
+                    // gating it would drop the one neutral packet that stops the
+                    // actuator. A fresh source event is already the authority on
+                    // whether a stale stop should still be written, and that is
+                    // enforced when the packet was enqueued/revision-checked.
+                    if (queued.GeneratedKind == "hd_hold" &&
                         !hdRumbleHold.IsCurrent(queued))
                     {
                         hdRumbleHold.RefreshSuperseded();

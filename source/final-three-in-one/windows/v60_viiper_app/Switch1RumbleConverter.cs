@@ -132,20 +132,23 @@ public static class Switch1RumbleConverter
         report[0] = 0x02;
         report[1] = 0x50;
         report[17] = 0x50;
+        // Physical controller is a Pro Controller 2 in BOTH modes. Real-hardware
+        // capture (795/795 packets) shows Switch2 drives it with ONE 5-byte
+        // subframe per 16-byte motor block, refreshed every 12 ms. Filling all
+        // three subframes is the Joy-Con 2 / WinJoyCon2 format (report 0x01);
+        // using it here would NOT reproduce native Pro2 HD feel. Keep the Pro1
+        // mode's source-amplitude conversion, but emit the native 1-subframe
+        // Pro2 report so both modes match Switch2's real output exactly.
         for (int i = 0; i < 5; i++)
         {
             report[2 + i] = left5[i];
-            report[7 + i] = left5[i];
-            report[12 + i] = left5[i];
             report[18 + i] = right5[i];
-            report[23 + i] = right5[i];
-            report[28 + i] = right5[i];
         }
         bool active = Pro2NativeRumbleEncoder.HasEffect(report);
         packet = new Pro2OutputPacket(report, "switch1-hd-converted", active, led) with
         {
             NativePro1Rumble = feedback[..8].ToArray(),
-            ConversionTelemetry = "source=winjoycon2-jc1_block_to_jc2 carriers=0x187,0x112 amplitude=hfa+linear"
+            ConversionTelemetry = "source=switch1-amplitude-to-native-pro2 carriers=0x187,0x112 amplitude=hfa+linear subframes=1"
         };
         return true;
     }

@@ -30,7 +30,15 @@ namespace Y700Switch2V60Viiper;
 /// </summary>
 public sealed class HdRumbleHoldState
 {
-    public const double RefreshIntervalMs = 36;
+    // Per-subframe timing from switch2_controller_research / SDL_hidapi_switch2.c:
+    // one 5-byte subframe drives the LRA for ~12 ms, and SDL resends every 12 ms.
+    // A packet that fills all three subframes therefore spans 36 ms; a native
+    // Pro2 packet (real hardware capture: only 1 subframe non-zero) spans 12 ms.
+    // Refresh cadence must match the active subframe count or the motor coasts
+    // between refreshes and the rumble feels weak/hollow.
+    public const double SubframeMs = 12;
+    public const double RefreshIntervalMs = 36;   // 3 subframes (legacy default / Pro1 converted)
+    public const double NativeRefreshIntervalMs = 12; // 1 active subframe (native Pro2)
     public const double HoldAfterSourceMs = 250;
     public const double SilenceHoldMs = 100;
     public const int SilenceRefreshMax = 3;
@@ -40,6 +48,7 @@ public sealed class HdRumbleHoldState
     private long revision, dueTicks, holdUntilTicks;
     private bool activeIsSilence;
     private int silenceRefreshLeft;
+    private double currentRefreshMs = RefreshIntervalMs;
 
     public bool Active => active != null;
     public long Generated { get; private set; }
@@ -50,6 +59,7 @@ public sealed class HdRumbleHoldState
     public string Telemetry =>
         "hd_hold=" + Active +
         " hd_hold_refresh_ms=" + RefreshIntervalMs.ToString("F0", CultureInfo.InvariantCulture) +
+        " hd_hold_active_refresh_ms=" + currentRefreshMs.ToString("F0", CultureInfo.InvariantCulture) +
         " hd_hold_after_source_ms=" + HoldAfterSourceMs.ToString("F0", CultureInfo.InvariantCulture) +
         " hd_hold_silence_ms=" + SilenceHoldMs.ToString("F0", CultureInfo.InvariantCulture) +
         " hd_hold_silence_max=" + SilenceRefreshMax +
@@ -80,10 +90,18 @@ public sealed class HdRumbleHoldState
         active = packet[..33].ToArray();
         source = packetSource;
         activeIsSilence = silent;
+        // Match refresh cadence to how many subframes actually carry amplitude.
+        // Native Pro2 report 0x02 fills one subframe per 16-byte block (verified
+        // on real hardware: 795/795 packets), so it spans only 12 ms and must be
+        // refreshed every 12 ms to hold the LRA continuously (SDL's native pace).
+        // Converted Pro1 packets fill three subframes, spanning 36 ms.
+        currentRefreshMs = silent || ActiveSubframes(packet) >= 2
+            ? RefreshIntervalMs
+            : NativeRefreshIntervalMs;
         // The host frame itself is already being written. The next keep-alive
         // is due one full cadence later, exactly as WinJoyCon2's worker only
         // re-sends _active once now - _last_time >= _refresh_interval().
-        dueTicks = now + Ticks(RefreshIntervalMs);
+        dueTicks = now + Ticks(currentRefreshMs);
         if (silent)
         {
             holdUntilTicks = now + Ticks(SilenceHoldMs);
@@ -94,6 +112,38 @@ public sealed class HdRumbleHoldState
             holdUntilTicks = now + Ticks(HoldAfterSourceMs);
             silenceRefreshLeft = 0;
         }
+    }
+
+    /// <summary>
+    /// Count 5-byte subframes that carry non-zero amplitude across both motor
+    /// blocks. Native Pro2 report 0x02 fills one subframe per block (real-hardware
+    /// capture: 795/795), spanning 12 ms; converted Pro1 fills all three, spanning
+    /// 36 ms. The hold cadence is scaled by this so every subframe is refreshed at
+    /// SDL's native 12 ms rate instead of coasting between widely spaced writes.
+    /// </summary>
+    private static int ActiveSubframes(ReadOnlySpan<byte> packet)
+    {
+        if (packet.Length < 33) return 3;
+        const ulong amplitudeMask = (0x3ffUL << 10) | (0x3ffUL << 30);
+        // Count subframes WITHIN ONE motor block, then take the max of left and
+        // right. Both blocks always mirror each other on Pro2, so counting both
+        // would double-report a 1-subframe native packet as 2 and pick the wrong
+        // (36 ms) cadence.
+        int max = 0;
+        for (int side = 1; side <= 17; side += 16)
+        {
+            if ((packet[side] & 0xf0) != 0x50) return 3; // opaque: worst case
+            int count = 0;
+            for (int frame = 0; frame < 3; frame++)
+            {
+                ulong bits = 0;
+                int off = side + 1 + frame * 5;
+                for (int i = 0; i < 5; i++) bits |= (ulong)packet[off + i] << (8 * i);
+                if ((bits & amplitudeMask) != 0) count++;
+            }
+            max = Math.Max(max, count);
+        }
+        return max;
     }
 
     /// <summary>
@@ -146,9 +196,13 @@ public sealed class HdRumbleHoldState
                 return false;
             }
             // Tone expired while the host said nothing: send one neutral stop.
+            // Capture the revision BEFORE CancelExpired() bumps it: the writer
+            // gates this packet on IsCurrent(), which compares StateRevision.
+            long stopRevision = revision;
             byte[] stop = Pro2NativeRumbleEncoder.Neutralize(active);
             stop[1] = stop[17] = (byte)(0x50 | (sequence & 15));
-            item = new(stop, true, now, Source: source, GeneratedKind: "hd_hold_stop");
+            item = new(stop, true, now, Source: source, GeneratedKind: "hd_hold_stop",
+                StateRevision: stopRevision);
             CancelExpired();
             expired = true;
             Expiries++;
@@ -164,9 +218,14 @@ public sealed class HdRumbleHoldState
 
         byte[] copy = active.ToArray();
         copy[1] = copy[17] = (byte)(0x50 | (sequence & 15));
-        item = new(copy, true, now, Source: source, GeneratedKind: "hd_hold");
+        // The writer drops any hd_hold packet whose StateRevision != revision.
+        // Without this the whole HD hold cadence is generated then discarded,
+        // so the actuator only ever sees the host's single short source packet
+        // (Pro2 native = one 12 ms subframe -> no perceptible rumble at all).
+        item = new(copy, true, now, Source: source, GeneratedKind: "hd_hold",
+            StateRevision: revision);
         if (activeIsSilence) { silenceRefreshLeft--; SilenceBrakes++; }
-        dueTicks = now + Ticks(RefreshIntervalMs);
+        dueTicks = now + Ticks(currentRefreshMs);
         Generated++;
         return true;
     }

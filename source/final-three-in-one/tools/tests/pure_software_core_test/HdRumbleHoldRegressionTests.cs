@@ -11,7 +11,10 @@ internal static class HdRumbleHoldRegressionTests
 {
     private static long Tick(double ms) => (long)Math.Ceiling(ms * Stopwatch.Frequency / 1000.0);
 
-    private static byte[] Frame(bool active)
+    private static byte[] Frame(bool active) => Frame(active, 3);
+
+    // subframes: 3 = converted Pro1, 1 = native Pro2 (real hardware capture).
+    private static byte[] Frame(bool active, int subframes)
     {
         byte[] p = new byte[33];
         p[0] = 0x02;
@@ -21,7 +24,9 @@ internal static class HdRumbleHoldRegressionTests
         for (int side = 0; side < 2; side++)
         for (int frame = 0; frame < 3; frame++)
         {
-            ulong v = bits;
+            // Only the first N slots carry the tone; the rest stay zero, exactly
+            // like a native Pro2 report or a fully packed converted report.
+            ulong v = frame < subframes ? bits : 0;
             int off = 2 + side * 16 + frame * 5;
             for (int i = 0; i < 5; i++) p[off + i] = (byte)(v >> (i * 8));
         }
@@ -39,9 +44,24 @@ internal static class HdRumbleHoldRegressionTests
             "HD silence brake is WinJoyCon2's 100 ms SILENCE_HOLD_S");
         check(HdRumbleHoldState.SilenceRefreshMax == 3,
             "HD silence brake sends at most three frames, as in WinJoyCon2");
+        check(HdRumbleHoldState.SubframeMs == 12 &&
+              HdRumbleHoldState.NativeRefreshIntervalMs == 12,
+            "native Pro2 (1 subframe) refreshes at SDL's 12 ms subframe cadence");
+        long t0 = Tick(1000);
+
+        // Native Pro2 report fills one subframe, so it must be re-sent every
+        // 12 ms to match SDL's pace. A 36 ms cadence would coast 24 ms between
+        // refreshes and feel weak/hollow, exactly what the real-hardware capture
+        // and j2a_protocol.md cadence (one subframe = ~12 ms) predict.
+        var native = new HdRumbleHoldState();
+        native.Observe(Frame(true, 1), "ns2pro-hd", true, t0);
+        check(!native.TryCreate(t0 + Tick(5), false, 1, out _, out _),
+            "native 1-subframe hold is not due before 12 ms");
+        check(native.TryCreate(t0 + Tick(13), false, 2, out var nativeRefresh, out _) &&
+              nativeRefresh!.GeneratedKind == "hd_hold",
+            "native 1-subframe hold produces a keep-alive after 12 ms (SDL pace)");
 
         var hold = new HdRumbleHoldState();
-        long t0 = Tick(1000);
 
         // A live tone holds, then re-sends at 36 ms cadence with only the
         // sequence nibble changed (payload bytes are otherwise byte-exact).
@@ -52,6 +72,11 @@ internal static class HdRumbleHoldRegressionTests
         check(hold.TryCreate(t0 + Tick(37), false, 2, out var refresh, out bool expired) &&
               !expired && refresh!.GeneratedKind == "hd_hold" && refresh.Native,
               "36 ms later a native keep-alive is produced");
+        // REGRESSION: the writer drops every hd_hold whose StateRevision does
+        // not match the hold's current revision. If TryCreate forgets to stamp
+        // it, all keep-alives are silently discarded -> Pro2 feels no rumble.
+        check(refresh!.StateRevision != 0 && hold.IsCurrent(refresh),
+              "generated keep-alive carries the revision the writer gate accepts");
         byte[] expected = Frame(true);
         expected[1] = expected[17] = 0x52;
         check(refresh!.Data.AsSpan(1, 32).SequenceEqual(expected.AsSpan(1, 32)),

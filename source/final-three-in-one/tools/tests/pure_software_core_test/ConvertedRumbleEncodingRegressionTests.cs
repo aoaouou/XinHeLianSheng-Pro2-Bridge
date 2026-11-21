@@ -92,15 +92,19 @@ internal static class ConvertedRumbleEncodingRegressionTests
         // carry amplitude via HFA lookup (HF) and linear 101-step (LF).
         byte[] source = [0xfc, 0xc9, 0xff, 0x71, 0, 1, 0x40, 0x40, 1, 0];
         check(Switch1RumbleConverter.TryMap(source, out var mapped, out _) &&
-            mapped.ConversionTelemetry.Contains("winjoycon2-jc1_block_to_jc2"),
-            "Pro1 mapping uses the WinJoyCon2 port");
-        // Both actuators, all three subframes carry the native fixed carriers.
-        foreach (int off in new[] { 2, 7, 12, 18, 23, 28 })
+            mapped.ConversionTelemetry.Contains("switch1-amplitude-to-native-pro2"),
+            "Pro1 amplitude conversion emits native Pro2 report");
+        // Physical Pro2: ONE subframe per motor block (real capture 795/795).
+        // Slots 2 and 3 must stay zero so this matches Switch2's real output.
+        foreach (int off in new[] { 2, 18 })
         {
             check((Read(mapped.Report, off) & 1023) == 0x187 &&
                  ((Read(mapped.Report, off) >> 20) & 1023) == 0x112,
                 "Pro2 native carriers 0x187/0x112 pinned at subframe " + off);
         }
+        foreach (int off in new[] { 7, 12, 23, 28 })
+            check(Read(mapped.Report, off) == 0,
+                "native Pro2 keeps subframe 2/3 silent at " + off);
         // A Pro1 max-amplitude block must produce a strong Pro2 amplitude, not a
         // weak one: full HFA key 0xC8 -> 65535 -> 29000 and LF 0x72 -> 29000.
         byte[] loud = [0x00, 0xC8, 0x40, 0x72, 0, 1, 0x40, 0x40, 1, 0];
