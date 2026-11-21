@@ -1,0 +1,283 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+
+namespace Y700Switch2V60Viiper;
+
+public sealed class V60UserSettings
+{
+    private static readonly object FileGate = new();
+
+    public double RumbleMultiplier { get; set; } = 1.0;
+    public string PushRateLabel { get; set; } = ViiperPushRateOption.Default.Label;
+    public string BackendLabel { get; set; } = VirtualBackendOption.Default.Label;
+    public string StickProcessingLabel { get; set; } = StickProcessingOption.Default.Label;
+    public string SelectedModeKey { get; set; } = "pro2";
+    public RearButtonConfiguration RearButtons { get; set; } = new();
+    public FaceButtonConfiguration FaceButtons { get; set; } = new();
+    public StickDeadzoneSettings StickDeadzones { get; set; } = new();
+    public bool LaunchAtLoginEnabled { get; set; }
+    public bool AutoReconnectOnStartupEnabled { get; set; }
+    public string[] LastConnectedPro2Addresses { get; set; } = new string[4];
+    public bool[] EnabledPro2Slots { get; set; } = [true, false, false, false];
+    public string[] SlotModeKeys { get; set; } = [];
+    public ControllerInputConfiguration[] SlotInputs { get; set; } = ControllerInputConfiguration.Normalize(null);
+    public Dictionary<string, Pro2StickCalibrationProfile> Pro2StickCalibrations { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, Pro2StickCalibrationProfile> PhysicalStickCalibrations { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+    public bool RuntimeBatteryRefreshEnabled { get; set; } = true;
+    public bool AutoSleepEnabled { get; set; }
+    public int AutoSleepMinutes { get; set; } = 10;
+    public bool AutoOptimizeBle { get; set; } = true;
+    public int BleAutomaticPolicyVersion { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool BleAutomaticPolicyMigrated { get; private set; }
+    public void MigrateAutomaticBlePolicy()
+    {
+        if (BleAutomaticPolicyVersion >= 1) return;
+        // One-time migration: old releases could persist an off switch even
+        // though connection-time high-rate negotiation is now the default.
+        AutoOptimizeBle = true;
+        BleAutomaticPolicyVersion = 1;
+        BleAutomaticPolicyMigrated = true;
+    }
+    public string UsbipExecutablePath { get; set; } = "";
+    public double Ps5GyroScalePitch { get; set; } = 1.0;
+    public double Ps5GyroScaleYaw { get; set; } = 1.0;
+    public double Ps5GyroScaleRoll { get; set; } = 1.0;
+    public bool ProfessionalInvertGyroPitch { get; set; }
+    public bool ProfessionalInvertGyroYaw { get; set; }
+    public bool ProfessionalInvertGyroRoll { get; set; }
+
+    public static V60UserSettings Load()
+    {
+        lock (FileGate)
+        {
+            try
+            {
+                if (!File.Exists(SettingsPath))
+                {
+                    return new V60UserSettings();
+                }
+
+                V60UserSettings? loaded =
+                    JsonSerializer.Deserialize<V60UserSettings>(
+                        File.ReadAllText(SettingsPath));
+                if (loaded == null)
+                {
+                    return new V60UserSettings();
+                }
+                loaded.MigrateAutomaticBlePolicy();
+                loaded.RumbleMultiplier =
+                    NormalizeRumbleMultiplier(loaded.RumbleMultiplier);
+                loaded.PushRateLabel =
+                    ViiperPushRateOption.FromLabel(loaded.PushRateLabel).Label;
+                loaded.BackendLabel =
+                    VirtualBackendOption.FromLabel(loaded.BackendLabel).Label;
+                loaded.StickProcessingLabel =
+                    StickProcessingOption.FromLabel(loaded.StickProcessingLabel).Label;
+                loaded.SelectedModeKey =
+                    NormalizeModeKey(loaded.SelectedModeKey);
+                loaded.RearButtons = (loaded.RearButtons ?? new()).Normalize();
+                loaded.FaceButtons = (loaded.FaceButtons ?? new()).Normalize();
+                loaded.StickDeadzones = (loaded.StickDeadzones ?? new()).Normalize();
+                loaded.UsbipExecutablePath = UsbipRuntimeLocator.NormalizeExecutablePath(loaded.UsbipExecutablePath);
+                loaded.LastConnectedPro2Addresses =
+                    NormalizeAddressSlots(loaded.LastConnectedPro2Addresses);
+                loaded.EnabledPro2Slots = NormalizeEnabledSlots(loaded.EnabledPro2Slots);
+                loaded.SlotModeKeys = Pro2SlotModes.Normalize(loaded.SlotModeKeys, loaded.SelectedModeKey);
+                loaded.SlotInputs = ControllerInputConfiguration.Normalize(loaded.SlotInputs);
+                loaded.Pro2StickCalibrations =
+                    NormalizeStickCalibrations(loaded.Pro2StickCalibrations);
+                loaded.PhysicalStickCalibrations = NormalizePhysicalStickCalibrations(loaded.PhysicalStickCalibrations);
+                loaded.Ps5GyroScalePitch =
+                    NormalizePs5GyroScale(loaded.Ps5GyroScalePitch);
+                loaded.Ps5GyroScaleYaw =
+                    NormalizePs5GyroScale(loaded.Ps5GyroScaleYaw);
+                loaded.Ps5GyroScaleRoll =
+                    NormalizePs5GyroScale(loaded.Ps5GyroScaleRoll);
+                return loaded;
+            }
+            catch
+            {
+                return new V60UserSettings();
+            }
+        }
+    }
+
+    public void Save()
+    {
+        lock (FileGate)
+        {
+            // Saving an explicit choice in this release acknowledges the policy.
+            // A later deliberate off setting must survive the next launch.
+            BleAutomaticPolicyVersion = Math.Max(1, BleAutomaticPolicyVersion);
+            EnabledPro2Slots = NormalizeEnabledSlots(EnabledPro2Slots);
+            string directory = Path.GetDirectoryName(SettingsPath)!;
+            Directory.CreateDirectory(directory);
+            RumbleMultiplier = NormalizeRumbleMultiplier(RumbleMultiplier);
+            PushRateLabel = ViiperPushRateOption.FromLabel(PushRateLabel).Label;
+            BackendLabel = VirtualBackendOption.FromLabel(BackendLabel).Label;
+            StickProcessingLabel = StickProcessingOption.FromLabel(StickProcessingLabel).Label;
+            SelectedModeKey = NormalizeModeKey(SelectedModeKey);
+            SlotModeKeys = Pro2SlotModes.Normalize(SlotModeKeys, SelectedModeKey);
+            SlotInputs = ControllerInputConfiguration.Normalize(SlotInputs);
+            RearButtons = (RearButtons ?? new()).Normalize();
+            FaceButtons = (FaceButtons ?? new()).Normalize();
+            StickDeadzones = (StickDeadzones ?? new()).Normalize();
+            UsbipExecutablePath = UsbipRuntimeLocator.NormalizeExecutablePath(UsbipExecutablePath);
+            LastConnectedPro2Addresses = NormalizeAddressSlots(LastConnectedPro2Addresses);
+            Pro2StickCalibrations = NormalizeStickCalibrations(Pro2StickCalibrations);
+            PhysicalStickCalibrations = NormalizePhysicalStickCalibrations(PhysicalStickCalibrations);
+            Ps5GyroScalePitch = NormalizePs5GyroScale(Ps5GyroScalePitch);
+            Ps5GyroScaleYaw = NormalizePs5GyroScale(Ps5GyroScaleYaw);
+            Ps5GyroScaleRoll = NormalizePs5GyroScale(Ps5GyroScaleRoll);
+            string temporary = SettingsPath + ".tmp";
+            File.WriteAllText(
+                temporary,
+                JsonSerializer.Serialize(
+                    this,
+                    new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temporary, SettingsPath, overwrite: true);
+        }
+    }
+
+    public static double NormalizeRumbleMultiplier(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return 1.0;
+        }
+        return Math.Round(Math.Clamp(value, 0.0, 3.0), 1);
+    }
+
+    public static double NormalizePs5GyroScale(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return 1.0;
+        }
+        return Math.Round(Math.Clamp(value, 0.1, 4.0), 2);
+    }
+
+    public static string NormalizeModeKey(string? value)
+    {
+        return (value ?? "").Trim().ToLowerInvariant() switch
+        {
+            "dualsenseedge" or "dualsense_edge" or "edge" or "ps5edge" => "dualsense",
+            "pro1" or "nspro" or "switchpro" => "pro1",
+            "dualsenseproimu" or "dualsense_professional_imu" or "ps5proimu" or "ps5_professional_imu" => "dualsenseproimu",
+            "pro2" or "ns2pro" or "nintendo" => "pro2",
+            "xboxproimu" or "xbox_professional_imu" or "xinputproimu" => "xboxproimu",
+            "xbox" or "xinput" or "xbox360" => "xbox",
+            _ => "dualsense"
+        };
+    }
+
+    public static bool[] NormalizeEnabledSlots(bool[]? value)
+    {
+        bool[] slots = [true, false, false, false];
+        for (int i = 1; i < 4; i++) slots[i] = value != null && i < value.Length && value[i];
+        return slots;
+    }
+
+    public static string[] NormalizeAddressSlots(string[]? value)
+    {
+        string[] normalized = new string[4];
+        if (value == null)
+        {
+            return normalized;
+        }
+
+        for (int i = 0; i < normalized.Length && i < value.Length; i++)
+        {
+            normalized[i] = NormalizeBleAddress(value[i]);
+        }
+        return normalized;
+    }
+
+    public static string NormalizeBleAddress(string? value)
+    {
+        string text = (value ?? "").Trim().ToUpperInvariant();
+        if (text.Length == 0)
+        {
+            return "";
+        }
+        return text.Replace("-", ":");
+    }
+
+    public bool TryGetStickCalibration(
+        string? address,
+        out Pro2StickCalibrationProfile profile)
+    {
+        string normalizedAddress = NormalizeBleAddress(address);
+        if (normalizedAddress.Length > 0 &&
+            Pro2StickCalibrations.TryGetValue(normalizedAddress, out Pro2StickCalibrationProfile? saved))
+        {
+            profile = Pro2StickCalibrationProfile.Normalize(saved);
+            return profile.CenterCalibrated;
+        }
+
+        profile = new Pro2StickCalibrationProfile();
+        return false;
+    }
+
+    public void SetStickCalibration(
+        string address,
+        Pro2StickCalibrationProfile profile)
+    {
+        string normalizedAddress = NormalizeBleAddress(address);
+        Pro2StickCalibrationProfile normalizedProfile =
+            Pro2StickCalibrationProfile.Normalize(profile);
+        if (normalizedAddress.Length == 0 || !normalizedProfile.CenterCalibrated)
+        {
+            return;
+        }
+
+        Pro2StickCalibrations[normalizedAddress] = normalizedProfile;
+    }
+
+    public static Dictionary<string, Pro2StickCalibrationProfile> NormalizeStickCalibrations(
+        IDictionary<string, Pro2StickCalibrationProfile>? value)
+    {
+        var normalized =
+            new Dictionary<string, Pro2StickCalibrationProfile>(StringComparer.OrdinalIgnoreCase);
+        if (value == null)
+        {
+            return normalized;
+        }
+
+        foreach ((string address, Pro2StickCalibrationProfile profile) in value)
+        {
+            string normalizedAddress = NormalizeBleAddress(address);
+            Pro2StickCalibrationProfile normalizedProfile =
+                Pro2StickCalibrationProfile.Normalize(profile);
+            if (normalizedAddress.Length > 0 && normalizedProfile.CenterCalibrated)
+            {
+                normalized[normalizedAddress] = normalizedProfile;
+            }
+        }
+        return normalized;
+    }
+
+    public static Dictionary<string, Pro2StickCalibrationProfile> NormalizePhysicalStickCalibrations(
+        IDictionary<string, Pro2StickCalibrationProfile>? profiles)
+    {
+        var result = new Dictionary<string, Pro2StickCalibrationProfile>(StringComparer.OrdinalIgnoreCase);
+        if (profiles == null) return result;
+        foreach (var (identity, profile) in profiles)
+        {
+            var normalized = Pro2StickCalibrationProfile.Normalize(profile);
+            if (!string.IsNullOrWhiteSpace(identity) && identity.Length <= 1024 && normalized.CenterCalibrated)
+                result[identity.Trim()] = normalized;
+        }
+        return result;
+    }
+
+    private static string SettingsPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "PRO2WirelessReceiverControlBoard",
+        "v6_settings.json");
+}

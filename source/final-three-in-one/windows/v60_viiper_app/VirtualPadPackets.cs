@@ -1,0 +1,644 @@
+using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace Y700Switch2V60Viiper;
+
+public enum ViiperVirtualMode
+{
+    DualSenseLike,
+    Pro1,
+    Pro2,
+    Xbox,
+    DualSenseProfessionalImuTest,
+    XboxProfessionalImuTest
+}
+
+public sealed record ViiperDeviceProfile(
+    ViiperVirtualMode Mode,
+    string Label,
+    string DeviceType,
+    string ExpectedVid,
+    string ExpectedPid,
+    int InputSize,
+    int FeedbackSize,
+    TimeSpan SendInterval)
+{
+    public string DeviceSpecificSerialNumber { get; init; } = "";
+    public bool SourcePaced { get; init; }
+
+    public static ViiperDeviceProfile DualSenseLike { get; } = new(
+        ViiperVirtualMode.DualSenseLike,
+        "PS5 兼容模式",
+        "dualsensehaptic",
+        "054c",
+        "0ce6",
+        33,
+        DualSenseHapticFrame.WireSize,
+        TimeSpan.FromMilliseconds(4));
+
+    public static ViiperDeviceProfile Pro1 { get; } = new(
+        ViiperVirtualMode.Pro1,
+        "Pro1 / Switch Pro",
+        "nspro",
+        "057e",
+        "2009",
+        28,
+        10,
+        TimeSpan.FromMilliseconds(4));
+
+    public static ViiperDeviceProfile Pro2 { get; } = new(
+        ViiperVirtualMode.Pro2,
+        "Pro2 / Nintendo",
+        "ns2pro",
+        "057e",
+        "2069",
+        28,
+        34,
+        TimeSpan.FromMilliseconds(4));
+
+    public static ViiperDeviceProfile Xbox { get; } = new(
+        ViiperVirtualMode.Xbox,
+        "Xbox / XInput",
+        "xbox360",
+        "045e",
+        "028e",
+        20,
+        2,
+        TimeSpan.FromMilliseconds(4));
+
+    public static ViiperDeviceProfile DualSenseProfessionalImuTest { get; } = new(
+        ViiperVirtualMode.DualSenseProfessionalImuTest,
+        "PS5 / Professional IMU Test",
+        "dualsensehaptic",
+        "054c",
+        "0ce6",
+        33,
+        DualSenseHapticFrame.WireSize,
+        TimeSpan.FromMilliseconds(4));
+
+    public static ViiperDeviceProfile XboxProfessionalImuTest { get; } = new(
+        ViiperVirtualMode.XboxProfessionalImuTest,
+        "Xbox / Professional IMU Test",
+        "xbox360",
+        "045e",
+        "028e",
+        20,
+        2,
+        TimeSpan.FromMilliseconds(4));
+
+    public bool IsPs5Family =>
+        Mode is ViiperVirtualMode.DualSenseLike
+            or ViiperVirtualMode.DualSenseProfessionalImuTest;
+
+    public bool UsesDualSenseHaptics =>
+        Mode is ViiperVirtualMode.DualSenseLike
+            or ViiperVirtualMode.DualSenseProfessionalImuTest;
+
+    public bool IsProfessionalImuTest =>
+        Mode is ViiperVirtualMode.DualSenseProfessionalImuTest
+            or ViiperVirtualMode.XboxProfessionalImuTest;
+
+    public bool MatchesIdentity(ViiperDevice device)
+    {
+        bool typeOk = string.Equals(
+            DeviceType,
+            device.Type,
+            StringComparison.OrdinalIgnoreCase);
+        bool vidOk = string.Equals(
+            NormalizeHex(ExpectedVid),
+            NormalizeHex(device.Vid),
+            StringComparison.OrdinalIgnoreCase);
+        bool pidOk = string.Equals(
+            NormalizeHex(ExpectedPid),
+            NormalizeHex(device.Pid),
+            StringComparison.OrdinalIgnoreCase);
+        return typeOk && vidOk && pidOk;
+    }
+
+    public IReadOnlyDictionary<string, object?> DeviceSpecificArguments()
+    {
+        var arguments = new Dictionary<string, object?>();
+        // Every backend must know whether new physical input, rather than a
+        // host poll timeout, owns its report cadence. Do not hard-code true:
+        // explicit fixed-rate/legacy clients retain their selected policy.
+        arguments["source_paced"] = SourcePaced;
+        if (!string.IsNullOrWhiteSpace(DeviceSpecificSerialNumber))
+        {
+            arguments["serial_number"] = DeviceSpecificSerialNumber.Trim();
+            if (IsPs5Family)
+            {
+                // dualsensehaptic bypasses the legacy backend MAC allocator.
+                // Steam/SDL may use feature 0x09 as identity, not USB serial.
+                // Preserve slot 1's old identity; give every extra slot a stable
+                // locally administered unicast address, independent of create order.
+                string serial = DeviceSpecificSerialNumber.Trim();
+                byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(serial));
+                hash[0] = (byte)((hash[0] & 0xFC) | 2);
+                arguments["mac_address"] = serial == SlotSerialNumber(ViiperVirtualMode.DualSenseLike, 1)
+                    ? "A5:FA:9C:CF:92:00" : string.Join(":", Array.ConvertAll(hash[..6], b => b.ToString("X2")));
+            }
+        }
+
+        if (Mode is ViiperVirtualMode.Pro2 or ViiperVirtualMode.Pro1)
+        {
+            arguments["input_interval_ms"] = Math.Clamp(
+                (int)Math.Round(SendInterval.TotalMilliseconds),
+                1,
+                255);
+        }
+        if (Mode == ViiperVirtualMode.Pro2)
+        {
+            // SDL's Pro2 protocol assumes a 4 ms endpoint clock. Keep the
+            // application source-paced while the USB endpoint alone performs
+            // explicit zero-order hold resampling; held reports are not new
+            // physical FD2 samples and are counted separately by the backend.
+            arguments["protocol_clock_resample"] = SourcePaced;
+        }
+
+        return arguments;
+    }
+
+    public static string SlotSerialNumber(ViiperVirtualMode mode, int slotIndex)
+    {
+        int normalizedSlot = Math.Clamp(slotIndex, 1, 4);
+        return mode switch
+        {
+            ViiperVirtualMode.Pro2 => "LC-V624-NS2PRO-S" + normalizedSlot,
+            ViiperVirtualMode.DualSenseLike => "LC-V624-DS5-S" + normalizedSlot,
+            ViiperVirtualMode.Pro1 => "PRO2-NSPRO-S" + normalizedSlot,
+            ViiperVirtualMode.Xbox => "LC-V624-XBOX-S" + normalizedSlot,
+            _ => "LC-V624-VPAD-S" + normalizedSlot
+        };
+    }
+
+    private static string NormalizeHex(string value)
+    {
+        string text = (value ?? "").Trim().ToLowerInvariant();
+        if (text.StartsWith("0x", StringComparison.Ordinal))
+        {
+            text = text[2..];
+        }
+        if (text.StartsWith("vid_", StringComparison.Ordinal) ||
+            text.StartsWith("pid_", StringComparison.Ordinal))
+        {
+            text = text[4..];
+        }
+        return text.PadLeft(4, '0');
+    }
+}
+
+public static class VirtualPadPackets
+{
+    private const ushort AxisCenter = GamepadState.AxisCenter;
+    private const ushort AxisMax = GamepadState.AxisMax;
+    private const ushort TriggerMax = GamepadState.TriggerMax;
+    private const double Pro2AccelRawPerG = ProfessionalImuConverter.SwitchAccelRawPerG;
+    private const double Pro2GyroRawPerDps = ProfessionalImuConverter.SwitchGyroRawPerDps;
+    // SDL's normal gamepad orientation has +Y upward. An unavailable sensor
+    // must not invent a 90-degree rotation relative to valid flat Pro2 input
+    // (source +Z -> target +Y). This mapper is stateless across controller
+    // slots: use a documented resting fallback, never a global last sample.
+    private static readonly MotionVector Ps5NeutralAccel = new(0, 8192, 0);
+
+    public static byte[] NeutralInput(ViiperDeviceProfile profile)
+    {
+        return profile.Mode switch
+        {
+            ViiperVirtualMode.DualSenseLike => DualSenseNeutral(),
+            ViiperVirtualMode.Pro1 => Ns2ProNeutral(),
+            ViiperVirtualMode.DualSenseProfessionalImuTest => DualSenseNeutral(),
+            ViiperVirtualMode.Pro2 => Ns2ProNeutral(),
+            ViiperVirtualMode.Xbox => new byte[20],
+            ViiperVirtualMode.XboxProfessionalImuTest => new byte[20],
+            _ => throw new ArgumentOutOfRangeException(nameof(profile))
+        };
+    }
+
+    public static byte[] FromGamepad(
+        ViiperDeviceProfile profile,
+        GamepadState? state,
+        GyroAxisInversion gyroAxisInversion = default,
+        Ps5ImuMapping? ps5ImuMapping = null,
+        Ps5OutputImuTuning? ps5OutputImuTuning = null,
+        DualSenseImuRawSample? professionalDualSenseImu = null,
+        GamepadState? professionalXboxState = null)
+    {
+        state ??= GamepadState.Neutral();
+        return profile.Mode switch
+        {
+            ViiperVirtualMode.DualSenseLike => DualSenseFromGamepad(
+                state,
+                gyroAxisInversion,
+                ps5ImuMapping ?? Ps5ImuMappingOption.Default.Mapping,
+                ps5OutputImuTuning ?? Ps5OutputImuTuning.Default,
+                professionalImu: null),
+            ViiperVirtualMode.DualSenseProfessionalImuTest => DualSenseFromGamepad(
+                state,
+                gyroAxisInversion,
+                ps5ImuMapping ?? Ps5ImuMappingOption.Default.Mapping,
+                ps5OutputImuTuning ?? Ps5OutputImuTuning.Default,
+                professionalImu: professionalDualSenseImu),
+            ViiperVirtualMode.Pro2 => Ns2ProFromGamepad(state, gyroAxisInversion),
+            ViiperVirtualMode.Pro1 => Pro1FromGamepad(state, gyroAxisInversion),
+            ViiperVirtualMode.Xbox => XboxFromGamepad(state),
+            ViiperVirtualMode.XboxProfessionalImuTest => XboxFromGamepad(professionalXboxState ?? state),
+            _ => throw new ArgumentOutOfRangeException(nameof(profile))
+        };
+    }
+
+    public static string FeedbackSummary(ViiperDeviceProfile profile, byte[] data)
+    {
+        return profile.Mode switch
+        {
+            ViiperVirtualMode.DualSenseLike when
+                DualSenseHapticFrame.TryParse(data, out DualSenseHapticFrame frame, out _) =>
+                $"DualSense haptic frame: kind={frame.Kind}, bytes={frame.Payload.Length}",
+            ViiperVirtualMode.DualSenseProfessionalImuTest when
+                DualSenseHapticFrame.TryParse(data, out DualSenseHapticFrame frame, out _) =>
+                $"DualSense Professional haptic frame: kind={frame.Kind}, bytes={frame.Payload.Length}",
+            ViiperVirtualMode.Pro1 when data.Length >= 10 =>
+                $"Switch Pro output: flags=0x{data[8]:X2}, player_led=0x{data[9]:X2}, L={Hex(data.AsSpan(0, 4))}, R={Hex(data.AsSpan(4, 4))}",
+            ViiperVirtualMode.Pro2 when data.Length >= 34 =>
+                $"NS2Pro output: flags=0x{data[32]:X2}, player_led=0x{data[33]:X2}, L={Hex(data.AsSpan(0, 6))}, R={Hex(data.AsSpan(16, 6))}",
+            ViiperVirtualMode.Xbox when data.Length >= 2 =>
+                $"XInput output: left={data[0]}, right={data[1]}",
+            ViiperVirtualMode.XboxProfessionalImuTest when data.Length >= 2 =>
+                $"XInput Professional output: left={data[0]}, right={data[1]}",
+            _ => profile.Label + " output: " + Hex(data)
+        };
+    }
+
+    private static byte[] DualSenseNeutral()
+    {
+        byte[] b = new byte[33];
+        WriteI16(b, 27, Ps5NeutralAccel.X);
+        WriteI16(b, 29, Ps5NeutralAccel.Y);
+        WriteI16(b, 31, Ps5NeutralAccel.Z);
+        return b;
+    }
+
+    private static byte[] Ns2ProNeutral()
+    {
+        byte[] b = new byte[28];
+        WriteU16(b, 4, 0x0800);
+        WriteU16(b, 6, 0x0800);
+        WriteU16(b, 8, 0x0800);
+        WriteU16(b, 10, 0x0800);
+        return b;
+    }
+
+    private static byte[] DualSenseFromGamepad(
+        GamepadState state,
+        GyroAxisInversion gyroAxisInversion,
+        Ps5ImuMapping ps5ImuMapping,
+        Ps5OutputImuTuning ps5OutputImuTuning,
+        DualSenseImuRawSample? professionalImu)
+    {
+        byte[] b = new byte[33];
+        b[0] = unchecked((byte)Axis12ToI8(state.Lx, invert: false));
+        b[1] = unchecked((byte)Axis12ToI8(state.Ly, invert: true));
+        b[2] = unchecked((byte)Axis12ToI8(state.Rx, invert: false));
+        b[3] = unchecked((byte)Axis12ToI8(state.Ry, invert: true));
+        WriteU32(b, 4, DualSenseButtons(state));
+        b[8] = DualSenseDpad(state);
+        b[9] = Trigger12ToU8(state.L2, state.IsPressed(GamepadButtons.L2));
+        b[10] = Trigger12ToU8(state.R2, state.IsPressed(GamepadButtons.R2));
+        WriteU16(b, 11, Math.Min(state.Ps5Touch.X, Ps5TouchGestures.MaxX));
+        WriteU16(b, 13, Math.Min(state.Ps5Touch.Y, Ps5TouchGestures.MaxY));
+        b[15] = state.Ps5Touch.Active ? (byte)1 : (byte)0;
+        // The second contact stays inactive; simultaneous macros never splice
+        // independent gestures into a single finger or duplicate tracking IDs.
+
+        if (professionalImu is { Valid: true } proImu)
+        {
+            WriteI16(b, 21, proImu.GyroX);
+            WriteI16(b, 23, proImu.GyroY);
+            WriteI16(b, 25, proImu.GyroZ);
+            WriteI16(b, 27, proImu.AccelX);
+            WriteI16(b, 29, proImu.AccelY);
+            WriteI16(b, 31, proImu.AccelZ);
+        }
+        else
+        {
+            DualSenseImuRawSample dualSenseImu = ConvertPs5FamilyImuToDualSenseRaw(
+                state,
+                gyroAxisInversion,
+                ps5OutputImuTuning.Normalize());
+            WriteI16(b, 21, state.GyroValid ? dualSenseImu.GyroX : (short)0);
+            WriteI16(b, 23, state.GyroValid ? dualSenseImu.GyroY : (short)0);
+            WriteI16(b, 25, state.GyroValid ? dualSenseImu.GyroZ : (short)0);
+            WriteI16(b, 27, state.AccelValid ? dualSenseImu.AccelX : Ps5NeutralAccel.X);
+            WriteI16(b, 29, state.AccelValid ? dualSenseImu.AccelY : Ps5NeutralAccel.Y);
+            WriteI16(b, 31, state.AccelValid ? dualSenseImu.AccelZ : Ps5NeutralAccel.Z);
+        }
+        return b;
+    }
+
+    private static byte[] Ns2ProFromGamepad(
+        GamepadState state,
+        GyroAxisInversion gyroAxisInversion)
+    {
+        byte[] b = new byte[28];
+        WriteU32(b, 0, Ns2ProButtons(state));
+        WriteU16(b, 4, ClampAxis(state.Lx));
+        WriteU16(b, 6, ClampAxis(state.Ly));
+        WriteU16(b, 8, ClampAxis(state.Rx));
+        WriteU16(b, 10, ClampAxis(state.Ry));
+        MotionVector ns2ProAccel = MapNs2ProAccel(state);
+        MotionVector ns2ProGyro = MapNs2ProGyro(state, gyroAxisInversion);
+        WriteI16(b, 12, state.AccelValid ? ns2ProAccel.X : (short)0);
+        WriteI16(b, 14, state.AccelValid ? ns2ProAccel.Y : (short)0);
+        WriteI16(b, 16, state.AccelValid ? ns2ProAccel.Z : (short)0);
+        WriteI16(b, 18, state.GyroValid ? ns2ProGyro.X : (short)0);
+        WriteI16(b, 20, state.GyroValid ? ns2ProGyro.Y : (short)0);
+        WriteI16(b, 22, state.GyroValid ? ns2ProGyro.Z : (short)0);
+        WriteU32(b, 24, state.MotionTimestampUs);
+        return b;
+    }
+
+    private static byte[] Pro1FromGamepad(GamepadState state, GyroAxisInversion inversion)
+    {
+        byte[] b = Ns2ProFromGamepad(state, inversion);
+        // SDL normalizes Switch 1 sensor axes as (-Y,+Z,-X), whereas the
+        // canonical Pro2 physical axes reach consumers as (+X,+Z,-Y).
+        // Pre-rotate at this protocol boundary, after source-axis inversion.
+        // Keep the source clock and calibrated units: the backend supplies
+        // Switch 1's advertised sensitivity, not another coordinate transform.
+        MotionVector accel = RotatePro1Axes(MapNs2ProAccel(state));
+        MotionVector gyro = RotatePro1Axes(MapNs2ProGyro(state, inversion));
+        WriteI16(b, 12, state.AccelValid ? accel.X : (short)0);
+        WriteI16(b, 14, state.AccelValid ? accel.Y : (short)0);
+        WriteI16(b, 16, state.AccelValid ? accel.Z : (short)0);
+        WriteI16(b, 18, state.GyroValid ? gyro.X : (short)0);
+        WriteI16(b, 20, state.GyroValid ? gyro.Y : (short)0);
+        WriteI16(b, 22, state.GyroValid ? gyro.Z : (short)0);
+        // Pro1 has no native paddles/C key. GL/GR/C are handled by RearButtonMapper.
+        WriteU32(b, 0, BinaryPrimitives.ReadUInt32LittleEndian(b) & 0x0003FFFF);
+        return b;
+    }
+
+    private static MotionVector RotatePro1Axes(MotionVector vector) =>
+        new(vector.Y, NegateI16(vector.X), vector.Z);
+
+    private static byte[] XboxFromGamepad(GamepadState state)
+    {
+        byte[] b = new byte[20];
+        WriteU32(b, 0, XboxButtons(state));
+        b[4] = Trigger12ToU8(state.L2, state.IsPressed(GamepadButtons.L2));
+        b[5] = Trigger12ToU8(state.R2, state.IsPressed(GamepadButtons.R2));
+        WriteI16(b, 6, Axis12ToI16(state.Lx, invert: false));
+        WriteI16(b, 8, Axis12ToI16(state.Ly, invert: false));
+        WriteI16(b, 10, Axis12ToI16(state.Rx, invert: false));
+        WriteI16(b, 12, Axis12ToI16(state.Ry, invert: false));
+        return b;
+    }
+
+    private static uint DualSenseButtons(GamepadState state)
+    {
+        uint buttons = 0;
+        if (state.IsPressed(GamepadButtons.West)) buttons |= 0x00000010;
+        if (state.IsPressed(GamepadButtons.South)) buttons |= 0x00000020;
+        if (state.IsPressed(GamepadButtons.East)) buttons |= 0x00000040;
+        if (state.IsPressed(GamepadButtons.North)) buttons |= 0x00000080;
+        if (state.IsPressed(GamepadButtons.L1)) buttons |= 0x00000100;
+        if (state.IsPressed(GamepadButtons.R1)) buttons |= 0x00000200;
+        if (state.IsPressed(GamepadButtons.L2)) buttons |= 0x00000400;
+        if (state.IsPressed(GamepadButtons.R2)) buttons |= 0x00000800;
+        if (state.IsPressed(GamepadButtons.Back)) buttons |= 0x00001000;
+        if (state.IsPressed(GamepadButtons.Start)) buttons |= 0x00002000;
+        if (state.IsPressed(GamepadButtons.LeftStick)) buttons |= 0x00004000;
+        if (state.IsPressed(GamepadButtons.RightStick)) buttons |= 0x00008000;
+        if (state.IsPressed(GamepadButtons.Home)) buttons |= 0x00010000;
+        if (state.IsPressed(GamepadButtons.Capture)) buttons |= 0x00020000;
+        return buttons;
+    }
+
+    private static byte DualSenseDpad(GamepadState state)
+    {
+        byte dpad = 0;
+        if (state.IsPressed(GamepadButtons.DPadUp)) dpad |= 0x01;
+        if (state.IsPressed(GamepadButtons.DPadDown)) dpad |= 0x02;
+        if (state.IsPressed(GamepadButtons.DPadLeft)) dpad |= 0x04;
+        if (state.IsPressed(GamepadButtons.DPadRight)) dpad |= 0x08;
+        return dpad;
+    }
+
+    private static uint Ns2ProButtons(GamepadState state)
+    {
+        uint buttons = 0;
+        if (state.IsPressed(GamepadButtons.South)) buttons |= 0x00000001;
+        if (state.IsPressed(GamepadButtons.East)) buttons |= 0x00000002;
+        if (state.IsPressed(GamepadButtons.West)) buttons |= 0x00000004;
+        if (state.IsPressed(GamepadButtons.North)) buttons |= 0x00000008;
+        if (state.IsPressed(GamepadButtons.R1)) buttons |= 0x00000010;
+        if (state.IsPressed(GamepadButtons.R2)) buttons |= 0x00000020;
+        if (state.IsPressed(GamepadButtons.Start)) buttons |= 0x00000040;
+        if (state.IsPressed(GamepadButtons.RightStick)) buttons |= 0x00000080;
+        if (state.IsPressed(GamepadButtons.DPadDown)) buttons |= 0x00000100;
+        if (state.IsPressed(GamepadButtons.DPadRight)) buttons |= 0x00000200;
+        if (state.IsPressed(GamepadButtons.DPadLeft)) buttons |= 0x00000400;
+        if (state.IsPressed(GamepadButtons.DPadUp)) buttons |= 0x00000800;
+        if (state.IsPressed(GamepadButtons.L1)) buttons |= 0x00001000;
+        if (state.IsPressed(GamepadButtons.L2)) buttons |= 0x00002000;
+        if (state.IsPressed(GamepadButtons.Back)) buttons |= 0x00004000;
+        if (state.IsPressed(GamepadButtons.LeftStick)) buttons |= 0x00008000;
+        if (state.IsPressed(GamepadButtons.Home)) buttons |= 0x00010000;
+        if (state.IsPressed(GamepadButtons.Capture)) buttons |= 0x00020000;
+        if (state.IsPressed(GamepadButtons.PaddleRight)) buttons |= 0x00040000;
+        if (state.IsPressed(GamepadButtons.PaddleLeft)) buttons |= 0x00080000;
+        if (state.IsPressed(GamepadButtons.Aux)) buttons |= 0x00100000;
+        return buttons;
+    }
+
+    private static uint XboxButtons(GamepadState state)
+    {
+        uint buttons = 0;
+        if (state.IsPressed(GamepadButtons.DPadUp)) buttons |= 0x0001;
+        if (state.IsPressed(GamepadButtons.DPadDown)) buttons |= 0x0002;
+        if (state.IsPressed(GamepadButtons.DPadLeft)) buttons |= 0x0004;
+        if (state.IsPressed(GamepadButtons.DPadRight)) buttons |= 0x0008;
+        if (state.IsPressed(GamepadButtons.Start)) buttons |= 0x0010;
+        if (state.IsPressed(GamepadButtons.Back)) buttons |= 0x0020;
+        if (state.IsPressed(GamepadButtons.LeftStick)) buttons |= 0x0040;
+        if (state.IsPressed(GamepadButtons.RightStick)) buttons |= 0x0080;
+        if (state.IsPressed(GamepadButtons.L1)) buttons |= 0x0100;
+        if (state.IsPressed(GamepadButtons.R1)) buttons |= 0x0200;
+        if (state.IsPressed(GamepadButtons.Home)) buttons |= 0x0400;
+        if (state.IsPressed(GamepadButtons.South)) buttons |= 0x1000;
+        if (state.IsPressed(GamepadButtons.East)) buttons |= 0x2000;
+        if (state.IsPressed(GamepadButtons.West)) buttons |= 0x4000;
+        if (state.IsPressed(GamepadButtons.North)) buttons |= 0x8000;
+        return buttons;
+    }
+
+    private static MotionVector MapNs2ProGyro(
+        GamepadState state,
+        GyroAxisInversion gyroAxisInversion)
+    {
+        return ApplyGyroAxisInversion(new MotionVector(
+            state.GyroX,
+            state.GyroY,
+            state.GyroZ), gyroAxisInversion);
+    }
+
+    private static MotionVector MapNs2ProAccel(GamepadState state)
+    {
+        return new MotionVector(
+            state.AccelX,
+            state.AccelY,
+            state.AccelZ);
+    }
+
+    private static MotionVector ApplyGyroAxisInversion(
+        MotionVector vector,
+        GyroAxisInversion gyroAxisInversion)
+    {
+        return new MotionVector(
+            gyroAxisInversion.InvertX ? NegateI16(vector.X) : vector.X,
+            gyroAxisInversion.InvertY ? NegateI16(vector.Y) : vector.Y,
+            gyroAxisInversion.InvertZ ? NegateI16(vector.Z) : vector.Z);
+    }
+
+    private static MotionVector ApplyPs5AccelOutputTuning(MotionVector mappedAccel)
+    {
+        // Switch raw accel is 4096/g in the Professional path; DualSense final
+        // HID raw is 8192/g. Axis sign is carried by the mapping itself.
+        return new MotionVector(
+            ScaleI16(mappedAccel.X, 2.0),
+            ScaleI16(mappedAccel.Y, 2.0),
+            ScaleI16(mappedAccel.Z, 2.0));
+    }
+
+    private static DualSenseImuRawSample ConvertPs5FamilyImuToDualSenseRaw(
+        GamepadState state,
+        GyroAxisInversion gyroAxisInversion,
+        Ps5OutputImuTuning tuning)
+    {
+        // Switch reports carry three chronological 5 ms IMU samples, not
+        // three sensors. The last sample is the freshest and is already
+        // calibrated by Pro2HidReportParser. Averaging the batch would add
+        // about 5 ms of group delay and attenuate fast reversals.
+        Ps5SourceMotion source = new(
+            state.AccelX,
+            state.AccelY,
+            state.AccelZ,
+            state.GyroX,
+            state.GyroY,
+            state.GyroZ);
+        double accelXG = source.AccelX / Pro2AccelRawPerG;
+        double accelYG = source.AccelZ / Pro2AccelRawPerG;
+        double accelZG = -source.AccelY / Pro2AccelRawPerG;
+
+        // DualSense target axes: +source X, +source Z, -source Y.
+        // Axis inversion is a physical Pro2/source-axis setting in every
+        // mode. Apply it before protocol rotation, so Y/Z do not silently
+        // change meaning when switching between Pro2, Pro1 and PS5.
+        MotionVector invertedGyro = MapNs2ProGyro(state, gyroAxisInversion);
+        double gyroX = invertedGyro.X / Pro2GyroRawPerDps;
+        double gyroY = invertedGyro.Z / Pro2GyroRawPerDps;
+        double gyroZ = -invertedGyro.Y / Pro2GyroRawPerDps;
+
+        return new DualSenseImuRawSample(
+            ClampRoundToInt16(accelXG * ProfessionalImuConverter.DualSenseAccelRawPerG),
+            ClampRoundToInt16(accelYG * ProfessionalImuConverter.DualSenseAccelRawPerG),
+            ClampRoundToInt16(accelZG * ProfessionalImuConverter.DualSenseAccelRawPerG),
+            ClampRoundToInt16(gyroX * ProfessionalImuConverter.DualSenseGyroRawPerDps * tuning.GyroScalePitch),
+            ClampRoundToInt16(gyroY * ProfessionalImuConverter.DualSenseGyroRawPerDps * tuning.GyroScaleYaw),
+            ClampRoundToInt16(gyroZ * ProfessionalImuConverter.DualSenseGyroRawPerDps * tuning.GyroScaleRoll),
+            Valid: true);
+    }
+
+    private static short ClampRoundToInt16(double value)
+    {
+        double rounded = Math.Round(value, MidpointRounding.AwayFromZero);
+        if (rounded < short.MinValue) return short.MinValue;
+        if (rounded > short.MaxValue) return short.MaxValue;
+        return (short)rounded;
+    }
+
+    private static short ScaleI16(short value, double scale)
+    {
+        double scaled = Math.Round(value * scale, MidpointRounding.AwayFromZero);
+        if (scaled < short.MinValue) return short.MinValue;
+        if (scaled > short.MaxValue) return short.MaxValue;
+        return (short)scaled;
+    }
+
+    private static short NegateI16(short value)
+    {
+        return value == short.MinValue ? short.MaxValue : (short)-value;
+    }
+
+    private static sbyte Axis12ToI8(ushort value, bool invert)
+    {
+        short i16 = Axis12ToI16(value, invert);
+        int scaled = i16 >= 0 ? (i16 * 127 + 16383) / 32767 : (i16 * 128 - 16384) / 32768;
+        if (scaled < -128) scaled = -128;
+        if (scaled > 127) scaled = 127;
+        return (sbyte)scaled;
+    }
+
+    private static short Axis12ToI16(ushort value, bool invert)
+    {
+        // Source calibration already owns its anti-drift deadzone. Applying
+        // another +/-64 clamp here swallowed valid calibrated micro-motions
+        // in every output mode, even with Raw Direct selected.
+        value = ClampAxis(value);
+        int centered = value - AxisCenter;
+        int scaled = centered >= 0
+            ? (centered * 32767) / (AxisMax - AxisCenter)
+            : (centered * 32768) / AxisCenter;
+        if (invert) scaled = -scaled;
+        if (scaled < short.MinValue) return short.MinValue;
+        if (scaled > short.MaxValue) return short.MaxValue;
+        return (short)scaled;
+    }
+
+    private static byte Trigger12ToU8(ushort value, bool pressed)
+    {
+        if (value == 0 && pressed)
+        {
+            return 255;
+        }
+        uint scaled = ((uint)value * 255u + TriggerMax / 2u) / TriggerMax;
+        return (byte)Math.Min(255u, scaled);
+    }
+
+    private static ushort ClampAxis(ushort value)
+    {
+        return value > AxisMax ? AxisMax : value;
+    }
+
+    private static void WriteU16(byte[] b, int offset, ushort value)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(offset, 2), value);
+    }
+
+    private static void WriteI16(byte[] b, int offset, short value)
+    {
+        BinaryPrimitives.WriteInt16LittleEndian(b.AsSpan(offset, 2), value);
+    }
+
+    private static void WriteU32(byte[] b, int offset, uint value)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(offset, 4), value);
+    }
+
+    private static string Hex(ReadOnlySpan<byte> bytes)
+    {
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private readonly record struct MotionVector(short X, short Y, short Z);
+
+    private readonly record struct Ps5SourceMotion(
+        double AccelX,
+        double AccelY,
+        double AccelZ,
+        double GyroX,
+        double GyroY,
+        double GyroZ);
+}
