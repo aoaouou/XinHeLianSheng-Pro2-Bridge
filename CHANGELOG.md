@@ -1,0 +1,121 @@
+# Changelog
+
+## PRO2 手柄助手 v3.1.1 · 无线自动高速连接
+
+- 默认启用连接时自动优化，一次性迁移旧版关闭状态，并保留之后的主动关闭选择。
+- Win11 优先恢复同一环境中已实测成功的固定 7.5ms 方案，完成当前双窗口复核后进入游戏；失败自动回到有界预设测试。
+- 继续保护其他手柄输入，Win10 不静默修改全局参数。
+
+## PRO2 手柄助手 v3.1 · 统一连接与多手柄预览
+
+- 首页和四个槽位统一选择有线／无线及游戏输出模式，按槽位保存连接方式和设备。
+- 补齐校准、断开重连、启动恢复与混合输入保护；NFC 不再兼做连接入口。
+- 增加混合槽位隔离和界面回归；硬件覆盖范围仍以实测为准。
+
+## PRO2 手柄助手 v3.0.2 · 校准与连接修复预览
+
+- 补齐有线 Pro2 与实体 Pro1 的摇杆、陀螺仪校准；可选槽位，显示倒计时与结果，失败保留旧配置。
+- HID 校准按设备保存，重连自动加载；修复重复陀螺仪校正。
+- 断开后保留原输入方式并允许重新连接；在线输入重复接入不重新初始化。
+- 保持 v2.9 为稳定推荐；新通路实机覆盖范围见接入文档。
+
+## PRO2 手柄助手 v3.0.1 · USB 修复预览
+
+- 修正单数 WinUSB 接口 GUID 漏查，增加接口占用与错误码诊断。
+- 去掉会阻断旧固件 USB 初始化的可选 NFC 旁路命令。
+- 本机真实 Pro2 USB 约 30 秒实测 249.99Hz，P50 4.00ms、P95 4.02ms，解析失败 0。先接入助手，再启动 Steam。
+
+[版本说明](docs/RELEASE_v3.0.1_ZH.md)
+
+## PRO2 手柄助手 v3.0 · 多输入预览
+
+- 在现有四槽位和四种输出中接入 Pro1 传统蓝牙 HID、Pro1 USB、Pro2 USB，不替换 Pro2 BLE。
+- 新增“输入 / NFC”，按实体身份分配槽位，排除自身虚拟设备，拔插后保留输出并尝试重连。
+- 输入频率按有效实体报告计数；Pro2 USB 目标 250Hz，Pro1 按原生频率转发，不承诺原生 250Hz。
+- Pro1 蓝牙 NFC 只读实验可导出 NTAG215 原始文件，包含取消、恢复和读包校验；Pro2 NFC 暂未接入。
+- 新输入和 NFC 已做离线回放与输出回环，仍需实体设备验收。v2.9 保留为稳定版。
+
+[版本说明](docs/RELEASE_v3.0_ZH.md)
+
+## PRO2 手柄助手 v2.6 · 2026-11-01
+
+- PS5 背键／C 键新增中央轻触、四向滑动和顺逆时针画圈，可设置时长、延迟、连发与顺序动作。
+- 增加触点释放、映射切换、输入中断和多键手势冲突保护；只在新输入帧上推进轨迹，不虚增 FD2。
+- 《影之刃零》图标补丁升级至 0.3，新增菜单／教程动作表、文本内嵌图标及物品／装备选中提示，保留备份、版本校验与恢复。
+- 完整离线回归 835,394 项通过，另已校验 PS5 后端 USB 触控报告。实际游戏画面与手势识别待试玩确认。
+
+[版本说明](docs/RELEASE_v2.6_ZH.md)
+
+## PRO2 手柄助手 v2.5 · 2026-11-01
+
+- 新增闲置自动休眠、按键唤醒重连及 5～60 分钟时长设置。
+- 启用时会登记本机，可能挤掉 NS2 主机配对记录；重新与主机配对即可恢复主机连接。
+- 增加 Win10 首页连接引导和一键优化入口，沿用备份、授权、实测与恢复流程。
+- 整理设置页布局；完整离线回归 768,402 项通过。
+
+[版本说明](docs/RELEASE_v2.5_ZH.md)
+
+## PRO2 手柄助手 v2.4
+
+- 自动连接发现可信 Pro2 广播后提前结束扫描；Windows 断线事件直接唤醒重连，保留输入中断保护、初始化和真实速率验收。
+- 新增连接阶段耗时日志，区分发现、BLE 就绪、游戏输出就绪和断线后恢复。
+- 合入 v2.1.1 的 PS5 原生识别修复，普通 DualSense 使用标准 USB 报告声明；《影之刃零》已实测不依赖 Steam Input 操作。
+- 合入 v2.3 的游戏图标管理：当前适配《影之刃零》Steam 版，按实际位置显示 Pro2 图标，支持多 Steam 库、手选目录、版本校验、安装、旧补丁更新与恢复。
+- 保留四模式、背键 / C 键、电量、震动与体感。提供标准版和兼容启动版，虚拟设备后端沿用 v2.1.1。
+
+连接速度与真实 133Hz 仍取决于本机条件；图标按游戏适配，PS5 触觉为转换输出。[版本说明](docs/RELEASE_v2.4_ZH.md)
+
+## V5.9.2 新和联胜版本
+
+- Replaced the old DualSense card and image with the `新和联胜` PS5 mode.
+- Reduced the user-facing release to three modes: 新和联胜 / PS5, Pro2 / Nintendo, and Xbox / XInput.
+- Removed the Xbox Elite 2 / GIP bring-up profile from the release bundle.
+- Added guided controller workflows for first pairing, reconnecting the saved controller, and replacing it.
+- Added the common `ble forget` firmware command to clear the saved BLE target safely.
+- Preserved automatic reconnect after controller sleep or transient disconnect.
+- Updated all firmware and Manager version reporting to V5.9.2.
+- Fixed Pro2 status compatibility: Manager now accepts both `live_*` and PS5 `input_*` freshness fields.
+- Pro2 status reads and tuning no longer require a live controller; physical rumble tests still require fresh BLE input.
+- `重连已配对` now rebuilds a connected link when input notifications are stale.
+- Added per-flash CH343 driver/version logging and a preflight block for the
+  reproduced Windows 26300 + WCH `2.1.2025.7` kernel-hang combination.
+- Locked Pro2 and Xbox release profiles to their compiled USB identities so a
+  stale NVS mode cannot override a successful mode flash.
+- Fixed whole-chip erase on ESP32-S3 by using the esptool RAM stub.
+- Completed a real hardware matrix covering Pro2 `057E:2069`, Xbox
+  `045E:028E`, 新和联胜 `054C:0CE6`, whole-chip erase, and PS5 restore.
+
+```text
+release/v5.9/新和联胜版本-aio-v5.9.2.exe
+sha256 5ca65c85970795fa66fdc88a9fbdac7de0af4daf5407eb2e625a8e710eef806d
+```
+
+## V5.9.1 Final
+
+This is the final archived release of the ESP32-S3 Switch 2 / Pro2 bridge.
+
+### Final Features
+
+- Three USB output modes: Pro2 / Nintendo, Xbox / XInput, and DualSense-like.
+- Windows all-in-one Manager with bundled firmware, esptool, BLE controls, USB checks, and test tools.
+- Pro2 / Nintendo raw HID `0x02` rumble preservation.
+- Xbox / XInput and DualSense-like ordinary rumble conversion with left/right strength preservation and dynamic Pro2 frequency shaping.
+- Corrected Xbox and generic HID Y-axis polarity.
+- Safer ESP32-S3 N16R8 PSRAM defaults: memmap enabled, malloc heap disabled, PSRAM memtest disabled.
+- Microsoft OS descriptor / BOS exposure for Nintendo mode WinUSB interface binding.
+- BLE background auto reconnect after controller sleep or disconnect, with wake-scan matching for the saved Pro2 address.
+- Manager-side protections against repeated flash clicks, stale esptool processes, busy COM ports, and UI stalls when both USB cables are connected.
+- DualSense host-trace diagnostics identified HID IN endpoint submission failure after a USB bus reset while BLE and PnP remained healthy.
+- HID submission is now gated from TinyUSB's DCD bus-reset event until configuration and endpoint reopening complete.
+- Immediate HID submit failures and asynchronous transfer failures are tracked separately.
+- Persistent HID IN failure triggers one cooldown-protected USB re-enumeration instead of retrying every 4 ms forever.
+- V5.9-only repository cleanup: old release artifacts, prototype scripts, temporary references, and outdated docs removed.
+
+### Final Release Artifact
+
+```text
+release/v5.9/PRO2手柄无线接收器控制板-aio-v5.9.1.exe
+sha256 04513580f0fce83ccde22fad7b2aed8731eaf37146b310f2ae13f88747de8edd
+```
+
+No further feature releases are planned.

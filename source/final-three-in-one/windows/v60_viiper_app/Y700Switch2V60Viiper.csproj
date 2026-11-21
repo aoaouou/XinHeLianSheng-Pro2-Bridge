@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PRO2ControllerAssistant</AssemblyName>
+    <StartupObject>Y700Switch2V60Viiper.Bootstrap</StartupObject>
+    <AssemblyTitle>PRO2 手柄助手</AssemblyTitle>
+    <Product>PRO2 手柄助手</Product>
+    <Description>适用于 Windows 10 / 11 x64 的 Pro2 纯软件手柄助手，支持 Pro2、Pro1、Xbox 与 PS5 兼容模式</Description>
+    <Version>3.2.7</Version>
+    <AssemblyVersion>3.2.7.0</AssemblyVersion>
+    <FileVersion>3.2.7.0</FileVersion>
+    <InformationalVersion>3.2.7-hid-compatibility-input-fixes</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;artifacts\**</DefaultItemExcludes>
+    <ApplicationIcon>Assets\AppIcon-v2.ico</ApplicationIcon>
+    <PureSoftwareRelease Condition="'$(PureSoftwareRelease)' == ''">false</PureSoftwareRelease>
+    <CompatibilityRendering Condition="'$(CompatibilityRendering)' == ''">false</CompatibilityRendering>
+    <BatteryReadExperiment Condition="'$(BatteryReadExperiment)' == ''">false</BatteryReadExperiment>
+    <OutputIsolationExperiment Condition="'$(OutputIsolationExperiment)' == ''">false</OutputIsolationExperiment>
+    <EmbedUsbipInstaller Condition="'$(EmbedUsbipInstaller)' == ''">true</EmbedUsbipInstaller>
+    <ViiperBinaryPath Condition="'$(ViiperBinaryPath)' == ''">..\..\tools\viiper\haptic-v0.8.0\viiper-haptic-v2.8.exe</ViiperBinaryPath>
+    <UsbipInstallerPath Condition="'$(UsbipInstallerPath)' == ''">..\..\tools\usbip-win2\v0.9.7.7\USBip-0.9.7.7-x64.exe</UsbipInstallerPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(PureSoftwareRelease)' == 'true'">
+    <DefineConstants>$(DefineConstants);PURE_SOFTWARE_RELEASE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(CompatibilityRendering)' == 'true'">
+    <DefineConstants>$(DefineConstants);PRO2_COMPATIBILITY_RENDERING</DefineConstants>
+    <InformationalVersion>3.2.7-hid-compatibility-input-fixes-ui-compatible</InformationalVersion>
+    <AssemblyTitle>PRO2 手柄助手 · 兼容启动版</AssemblyTitle>
+    <Product>PRO2 手柄助手 · 兼容启动版</Product>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(BatteryReadExperiment)' == 'true'">
+    <DefineConstants>$(DefineConstants);PRO2_BATTERY_READ_EXPERIMENT</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(OutputIsolationExperiment)' == 'true'">
+    <DefineConstants>$(DefineConstants);PRO2_OUTPUT_ISOLATION_EXPERIMENT</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(OutputIsolationExperiment)' != 'true'">
+    <Compile Remove="BleOutputIsolationExperiment.cs;BleNotifyLayerExperiment.cs;BleRateWatchExperiment.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(BatteryReadExperiment)' != 'true'">
+    <!-- Radio experiments remain source-only in the normal release. -->
+    <Compile Remove="Pro2LiveBatteryReadPolicy.cs;Pro2BleInputSource.BatteryReadExperiment.cs;Pro2BleInputSource.BatteryFollowupExperiment.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\GameGlyphs\PBZ\patch-manifest.json" LogicalName="Embedded.GameGlyph.PBZ.Manifest" />
+    <EmbeddedResource Include="Assets\GameGlyphs\PBZ\PRO2_PBZ_Glyphs_0_P.pak" LogicalName="Embedded.GameGlyph.PBZ.File.PRO2_PBZ_Glyphs_0_P.pak" />
+    <EmbeddedResource Include="Assets\GameGlyphs\PBZ\PRO2_PBZ_Glyphs_0_P.utoc" LogicalName="Embedded.GameGlyph.PBZ.File.PRO2_PBZ_Glyphs_0_P.utoc" />
+    <EmbeddedResource Include="Assets\GameGlyphs\PBZ\PRO2_PBZ_Glyphs_0_P.ucas" LogicalName="Embedded.GameGlyph.PBZ.File.PRO2_PBZ_Glyphs_0_P.ucas" />
+    <Resource Include="Assets\AppIcon-v2.ico" />
+    <Resource Include="Assets\AppIcon-v2.png" />
+    <Resource Include="Assets\Controller-pro2-v2.8.png" />
+    <Resource Include="Assets\Controller-pro1-official.png" />
+    <Resource Include="Assets\Controller-pro2-official.png" />
+    <EmbeddedResource Include="$(ViiperBinaryPath)" LogicalName="Embedded.viiper.haptic.exe" />
+    <EmbeddedResource Include="..\..\tools\viiper\haptic-v0.8.0\LICENSE.txt" LogicalName="Embedded.viiper.haptic.license" />
+    <EmbeddedResource Include="$(UsbipInstallerPath)" LogicalName="Embedded.usbip.installer"
+                      Condition="'$(EmbedUsbipInstaller)' == 'true'" />
+    <EmbeddedResource Include="..\..\tools\usbip-win2\v0.9.7.7\LICENSE.txt" LogicalName="Embedded.usbip.license"
+                      Condition="'$(EmbedUsbipInstaller)' == 'true'" />
+  </ItemGroup>
+</Project>
+
+

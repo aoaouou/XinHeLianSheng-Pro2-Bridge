@@ -1,0 +1,220 @@
+using System.Threading.Channels;
+using Y700Switch2V60Viiper;
+
+internal static class SleepConnectionSafetyRegressionTests
+{
+    public static async Task RunAsync(Action<bool, string> check)
+    {
+        const ulong savedWakeAddress = 0x38C6CE27FC2D;
+        check(Pro2ReconnectAdvertisementPolicy.CanUse(savedWakeAddress, savedWakeAddress, true, TimeSpan.FromMilliseconds(10)),
+            "fresh connectable advertisement from the exact saved slot address may immediately interrupt scan backoff without a manufacturer flag");
+        foreach (var args in new[] { (savedWakeAddress, savedWakeAddress, false, 0.0), (savedWakeAddress, savedWakeAddress, true, 5.01),
+            (savedWakeAddress, savedWakeAddress, true, -1.01), (savedWakeAddress, 0x112233445566UL, true, 0.0), (0UL, savedWakeAddress, true, 0.0) })
+            check(!Pro2ReconnectAdvertisementPolicy.CanUse(args.Item1, args.Item2, args.Item3, TimeSpan.FromSeconds(args.Item4)),
+                "nonconnectable, stale, future, other-slot and unknown-address packets cannot wake a GATT connection");
+        foreach (string reason in new[] { "no_pro2", "no_advertisements", "saved_not_seen" })
+            check(Pro2ReconnectAdvertisementPolicy.CanInterruptScanBackoff(reason), "known wake packet can interrupt scan-only backoff " + reason);
+        foreach (string reason in new[] { "unreachable", "timeout", "gatt_draining", "gatt_stalled", "access_denied", "channels_missing" })
+            check(!Pro2ReconnectAdvertisementPolicy.CanInterruptScanBackoff(reason), "real connection failure preserves quarantine and cooldown " + reason);
+        // Deliberately hold a simulated battery/rumble write in flight. Sleep cannot
+        // cut its connection until that producer has finished; no reconnect after drop.
+        var trafficJoined = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var order = new List<string>();
+        bool connected = true;
+        Task<bool> sleeping = Pro2SleepSafety.SendQuiescedAsync(async () =>
+        {
+            order.Add("stop_workers"); await trafficJoined.Task; order.Add("joined");
+        }, () => true, maintain => order.Add("maintain_" + maintain), () =>
+        {
+            order.Add("sleep"); connected = false; return Task.FromResult(true);
+        }, () => connected, () => order.Add("resume"), default);
+        check(!sleeping.IsCompleted && order.SequenceEqual(new[] { "stop_workers" }),
+            "sleep waits for pending command producers instead of racing the power command");
+        trafficJoined.SetResult();
+        check(await sleeping && order.SequenceEqual(new[] { "stop_workers", "joined", "maintain_False", "sleep" }),
+            "joined traffic and released Windows reconnect intent precede sleep, no post-disconnect writes");
+
+        foreach (string failure in new[] { "new_input", "command_failed", "command_exception", "link_dropped", "cancelled" })
+        {
+            order.Clear(); connected = true;
+            using var cancellation = new CancellationTokenSource();
+            try
+            {
+                bool accepted = await Pro2SleepSafety.SendQuiescedAsync(() =>
+                {
+                    order.Add("joined");
+                    if (failure == "cancelled") cancellation.Cancel();
+                    return Task.CompletedTask;
+                }, () => failure != "new_input", maintain => order.Add("maintain_" + maintain), () =>
+                {
+                    order.Add("sleep");
+                    if (failure == "command_exception") throw new InvalidOperationException("write_failed");
+                    if (failure == "link_dropped") connected = false;
+                    return Task.FromResult(false);
+                }, () => connected, () => order.Add("resume"), cancellation.Token);
+                check(!accepted, "failed/deferred quiesced sleep is not committed: " + failure);
+            }
+            catch (InvalidOperationException) when (failure == "command_exception") { }
+            catch (OperationCanceledException) when (failure == "cancelled") { }
+            check(order.Count(s => s == "resume") == (failure == "link_dropped" ? 0 : 1),
+                "only live failed/deferred sleep restores its workers: " + failure);
+            if (failure is "new_input" or "cancelled")
+                check(!order.Contains("sleep") && !order.Contains("maintain_False"), "new input/cancel during join prevents sleep");
+            if (failure == "link_dropped")
+                check(!order.Contains("maintain_True"), "unexpected disconnect cannot acquire a fresh Windows reconnect request");
+        }
+        check(Pro2SleepSafety.CanSendShutdownStop(true, true), "normal connected exit may deliver final rumble stop");
+        check(!Pro2SleepSafety.CanSendShutdownStop(true, false) && !Pro2SleepSafety.CanSendShutdownStop(false, true),
+            "sleep/disconnect teardown must not use stale characteristics to reconnect");
+
+        using var gate = new SemaphoreSlim(1, 1);
+        int inFlight = 0, maxInFlight = 0;
+        var committed = new bool[4];
+        var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(i => Pro2SleepSafety.EnterAsync(gate,
+            () => i != 1, async () =>
+            {
+                maxInFlight = Math.Max(maxInFlight, ++inFlight);
+                await Task.Delay(3);
+                inFlight--;
+                return i != 3;
+            }, () => Task.FromResult(i != 2), () => { committed[i] = true; return Task.CompletedTask; }, default)));
+        check(maxInFlight == 1 && gate.CurrentCount == 1, "sleep preparation serialized across four controllers");
+        check(results.SequenceEqual(new[] { Pro2SleepResult.Sleeping, Pro2SleepResult.Deferred,
+            Pro2SleepResult.CommandFailed, Pro2SleepResult.PairingFailed }), "sleep failures and active peer are distinct");
+        check(committed.SequenceEqual(new[] { true, false, false, false }), "only confirmed sleep stops its own source");
+
+        bool idle = true; int writes = 0, commits = 0;
+        await gate.WaitAsync();
+        var queued = Pro2SleepSafety.EnterAsync(gate, () => idle, () => Task.FromResult(true),
+            () => { writes++; return Task.FromResult(true); }, () => { commits++; return Task.CompletedTask; }, default);
+        idle = false; gate.Release();
+        check(await queued == Pro2SleepResult.Deferred && writes == 0, "new input while queued cancels sleep");
+        idle = true;
+        var changedDuringPair = await Pro2SleepSafety.EnterAsync(gate, () => idle,
+            () => { idle = false; return Task.FromResult(true); }, () => { writes++; return Task.FromResult(true); },
+            () => { commits++; return Task.CompletedTask; }, default);
+        check(changedDuringPair == Pro2SleepResult.Deferred && writes == 0 && commits == 0,
+            "new activity or changed settings during handshake cancel sleep before write");
+        using (var acceptedCancel = new CancellationTokenSource())
+        {
+            var accepted = await Pro2SleepSafety.EnterAsync(gate, () => true, () => Task.FromResult(true),
+                () => { acceptedCancel.Cancel(); return Task.FromResult(true); },
+                () => { commits++; return Task.CompletedTask; }, acceptedCancel.Token);
+            check(accepted == Pro2SleepResult.Sleeping && commits == 1,
+                "cancellation after confirmed sleep still commits wake state");
+            commits = 0;
+        }
+        using (var cancel = new CancellationTokenSource())
+        {
+            await gate.WaitAsync();
+            var cancelled = Pro2SleepSafety.EnterAsync(gate, () => true, () => Task.FromResult(true),
+                () => Task.FromResult(true), () => { commits++; return Task.CompletedTask; }, cancel.Token);
+            cancel.Cancel();
+            try { await cancelled; check(false, "queued sleep cancels"); } catch (OperationCanceledException) { }
+            check(gate.CurrentCount == 0 && commits == 0, "cancelled waiter cannot release another operation's gate");
+            gate.Release();
+        }
+
+        int listens = 0, retries = 0;
+        await Pro2SleepSafety.WaitForWakeAsync(_ => ++listens switch
+        {
+            1 => Task.FromResult(false),
+            2 => Task.FromException<bool>(new InvalidOperationException("RadioNotAvailable")),
+            _ => Task.FromResult(true)
+        }, (_, _) => { retries++; return Task.CompletedTask; }, default);
+        check(listens == 3 && retries == 2, "watcher failure retries rather than pretending to wake");
+
+        var channels = Enumerable.Range(0, 4).Select(_ => Channel.CreateUnbounded<ulong>()).ToArray();
+        using (var cancel = new CancellationTokenSource())
+        {
+            Task[] waits = channels.Select((channel, index) => Pro2SleepSafety.WaitForWakeAsync(async token =>
+            {
+                while (true)
+                {
+                    ulong actual = await channel.Reader.ReadAsync(token);
+                    if (Pro2SleepSafety.IsWakeAdvertisement((ulong)(index + 1), actual, true)) return true;
+                }
+            }, (_, token) => Task.Delay(1, token), cancel.Token)).ToArray();
+            foreach (var channel in channels) channel.Writer.TryWrite(2);
+            await waits[1].WaitAsync(TimeSpan.FromSeconds(2));
+            check(!waits[0].IsCompleted && !waits[2].IsCompleted && !waits[3].IsCompleted,
+                "controller 2 wake advertisement does not wake sleeping controllers 1 3 4");
+            cancel.Cancel();
+            try { await Task.WhenAll(waits); } catch (OperationCanceledException) { }
+            check(waits.Where((_, i) => i != 1).All(t => t.IsCanceled), "stop listener cancels only waiters, no invented wake");
+        }
+        check(!Pro2SleepSafety.IsWakeAdvertisement(1, 1, false), "non Nintendo advertisement cannot wake slot");
+        var target = new Pro2ManualCandidate(0x38C6CE27FC2D,
+            Windows.Devices.Bluetooth.BluetoothAddressType.Random, "Pro2", -39, true, 30);
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var observed = new Pro2WakeAdvertisement(target, now, true);
+        var none = new HashSet<string>();
+        check(observed.IsUsable(none, none, false) &&
+            observed.Candidate.AddressType == Windows.Devices.Bluetooth.BluetoothAddressType.Random,
+            "direct wake preserves the current advertisement address type");
+        check(!(observed with { ObservedTicks = now - 8 * System.Diagnostics.Stopwatch.Frequency }).IsUsable(none, none, false) &&
+            !(observed with { Connectable = false }).IsUsable(none, none, false),
+            "expired and nonconnectable observations require fresh discovery");
+        check(!observed.IsUsable(new HashSet<string> { target.AddressText }, none, false) &&
+            !observed.IsUsable(none, new HashSet<string> { "00:00:00:00:00:01" }, true),
+            "wake cannot steal another slot or override a pinned address");
+        var recovery = new Pro2BleConnectionRecovery();
+        var late = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var released = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            await recovery.AwaitAsync(late.Task, TimeSpan.FromMilliseconds(20), n => released.TrySetResult(n), default);
+            check(false, "timed out request must release the caller");
+        }
+        catch (TimeoutException)
+        {
+            check(recovery.IsDraining && !released.Task.IsCompleted, "deadline releases caller while previous Windows operation is still pending");
+        }
+        late.SetResult(42);
+        check(await released.Task.WaitAsync(TimeSpan.FromSeconds(2)) == 42, "late GATT result released rather than installed as new owner");
+        using (var drained = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            while (recovery.IsDraining) await Task.Delay(5, drained.Token);
+        check(await recovery.AwaitAsync(Task.FromResult(43), TimeSpan.FromSeconds(1), null, default) == 43,
+            "fresh connection can proceed after previous operation drains");
+        var serviceFailure = new BleConnectionAttemptEvidence { Address = target.AddressText, Stage = "GATT 服务发现", Outcome = "Unreachable" };
+        check(Pro2BleConnectionRecovery.IsServiceFailure(serviceFailure, target.AddressText) &&
+            !Pro2BleConnectionRecovery.IsServiceFailure(serviceFailure, "00:00:00:00:00:01") &&
+            !Pro2BleConnectionRecovery.IsServiceFailure(serviceFailure with { Stage = "ACK 通知订阅" }, target.AddressText),
+            "service-first recovery is isolated to the address and stage that actually failed");
+        const ulong a = 0xBCC746A58DD2, b = 0xA8595F197E53;
+        check(Pro2SleepSafety.ResolveHost("", [a]) == a, "single exposed radio resolves host");
+        check(Pro2SleepSafety.ResolveHost("BluetoothLE#BluetoothLEa8:59:5f:19:7e:53-38:c6:ce:27:fc:2d", [a, b]) == b,
+            "multi radio uses local address field rather than default adapter");
+        check(Pro2SleepSafety.ResolveHost("BluetoothLE#38:c6:ce:27:fc:2d", [a, b]) == 0,
+            "ambiguous multi radio cannot overwrite wake pairing");
+        check(Pro2SleepSafety.ResolveHost("BluetoothLE#BluetoothLEbc:c7:46:a5:8d:d2-a8:59:5f:19:7e:53", [b]) == 0,
+            "contradictory local radio ID is not silently replaced by another radio");
+        check(Pro2SleepSafety.ResolveHost("BluetoothLE#BluetoothLEa8595f197e53-38c6ce27fc2d", [a, b]) == b,
+            "compact Windows local address field resolves correctly");
+
+        var baseline = new BleConnectionAttemptEvidence { Adapters = 1, CapableAdapters = 1, DefaultRadioState = "On",
+            Outcome = "no_candidate", ScanModes = "active passive", Advertisements = 50, Stage = "scan" };
+        void Diagnosis(BleConnectionAttemptEvidence e, string code) => check(BleConnectionDiagnosis.Evaluate(e).Code == code,
+            "connection diagnosis " + code);
+        Diagnosis(baseline, "no_pro2");
+        Diagnosis(baseline with { Advertisements = 0 }, "no_advertisements");
+        Diagnosis(baseline with { Adapters = 0, CapableAdapters = 0 }, "no_adapter");
+        Diagnosis(baseline with { CapableAdapters = 0 }, "no_central");
+        Diagnosis(baseline with { DefaultRadioState = "Off", Advertisements = 0 }, "radio_off");
+        Diagnosis(baseline with { DefaultRadioState = "Off", Outcome = "Unreachable" }, "unreachable");
+        Diagnosis(baseline with { Adapters = 2, DefaultRadioState = "Off" }, "no_pro2");
+        Diagnosis(baseline with { Outcome = "AccessDenied" }, "access_denied");
+        Diagnosis(baseline with { ScanError = "RadioNotAvailable" }, "scan_error");
+        Diagnosis(baseline with { Outcome = "exception", Error = "COMException 0x80070005" }, "access_denied");
+        Diagnosis(baseline with { Outcome = "reserved" }, "reserved");
+        Diagnosis(baseline with { Outcome = "saved_not_seen" }, "saved_not_seen");
+        Diagnosis(baseline with { Outcome = "Unreachable", Stage = "GATT 服务发现" }, "unreachable");
+        Diagnosis(baseline with { Outcome = "channels_missing" }, "channels_missing");
+        Diagnosis(baseline with { Outcome = "notify_timeout" }, "notify_timeout");
+        Diagnosis(baseline with { Outcome = "timeout" }, "timeout");
+        foreach (string outcome in new[] { "running", "connected", "cancelled" })
+            check(!BleConnectionDiagnosis.Evaluate(baseline with { Outcome = outcome }).Visible, "healthy or cancelled hidden " + outcome);
+        string diagnosisText = BleConnectionDiagnosis.Evaluate(baseline with { Outcome = "Unreachable" }).Advice;
+        check(diagnosisText.Contains("不能据此认定") && !diagnosisText.Contains("驱动过旧导致"), "no fabricated driver or protocol root cause");
+    }
+}

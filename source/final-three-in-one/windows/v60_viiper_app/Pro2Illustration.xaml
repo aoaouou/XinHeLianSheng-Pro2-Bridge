@@ -1,0 +1,7 @@
+<UserControl x:Class="Y700Switch2V60Viiper.Pro2Illustration"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ IsHitTestVisible="False" Focusable="False"
+ AutomationProperties.Name="Pro2 手柄正面：上 X、右 A、下 B、左 Y">
+ <Image Source="/PRO2ControllerAssistant;component/Assets/Controller-pro2-v2.8.png" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+</UserControl>

@@ -1,0 +1,31 @@
+<Window x:Class="Y700Switch2V60Viiper.PhysicalInputsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="NFC 读卡" Width="700" Height="600" MinWidth="540" MinHeight="440"
+        WindowStartupLocation="CenterOwner" Background="#F5F8F6" Foreground="#253C32">
+    <Window.Resources>
+        <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+        <Style TargetType="Button"><Setter Property="Padding" Value="14,8"/><Setter Property="Margin" Value="0,0,8,6"/></Style>
+    </Window.Resources>
+    <Grid Margin="24">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock Text="NFC 读卡" FontSize="24" FontWeight="SemiBold"/>
+            <TextBlock Text="先在首页或“管理手柄”连接手柄，再选择需要读卡的槽位。" Foreground="#667870" Margin="0,8,0,12"/>
+            <ComboBox x:Name="SlotChoice" Width="130" HorizontalAlignment="Left" SelectedIndex="0" SelectionChanged="Slot_Changed" Margin="0,0,0,12">
+                <ComboBoxItem Content="手柄 1"/><ComboBoxItem Content="手柄 2"/><ComboBoxItem Content="手柄 3"/><ComboBoxItem Content="手柄 4"/>
+            </ComboBox>
+            <TextBlock Text="Pro1 蓝牙只读实验：标签贴近手柄 NFC 区。读取时暂停此槽位输入和震动，结束后恢复。Pro1 USB 与 Pro2 NFC 尚未接入。" Foreground="#667870"/>
+        </StackPanel>
+        <WrapPanel Grid.Row="1" Margin="0,14,0,4">
+            <Button x:Name="NfcButton" Content="读取标签（25秒）" Click="ReadNfc_Click" IsEnabled="False"/>
+            <Button x:Name="CancelNfcButton" Content="取消" Click="CancelNfc_Click" IsEnabled="False"/>
+            <Button x:Name="SaveNfcButton" Content="保存 .bin…" Click="SaveNfc_Click" IsEnabled="False"/>
+        </WrapPanel>
+        <TextBox Grid.Row="2" x:Name="Evidence" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" BorderBrush="#CCD9D1" Padding="10" Margin="0,8,0,0" FontFamily="Consolas, Microsoft YaHei UI" FontSize="12"/>
+        <StackPanel Grid.Row="3" Margin="0,12,0,0">
+            <TextBlock x:Name="StatusText" Foreground="#667870"/>
+            <TextBlock Text="原始文件可供支持它的模拟器载入；不会自动向游戏转发 NFC，也不校验 amiibo 密钥和签名。" Foreground="#667870" FontSize="12" Margin="0,7,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>

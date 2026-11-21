@@ -1,0 +1,31 @@
+# 构建产物
+bin/
+obj/
+_dist/
+_dist-browser/
+dist/
+artifacts/
+*.user
+*.suo
+.vs/
+
+# Go 构建
+/viiper
+*.test
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak
+_*.log
+srv*.log
+
+# 平台杂项
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 大型二进制：viiper 后端（12MB/个，走 release/ 单独分发，不入库）
+# 如需入库请自行删除这两行
+tools/viiper/haptic-v0.8.0/*.exe
+tools/usbip-win2/**/*.exe
