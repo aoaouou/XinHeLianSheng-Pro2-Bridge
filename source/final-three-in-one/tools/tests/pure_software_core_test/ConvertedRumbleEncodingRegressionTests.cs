@@ -88,38 +88,57 @@ internal static class ConvertedRumbleEncodingRegressionTests
             out var ps5, out _) && SecondAmplitude(Encode(ps5, 1, check), 2) == 453,
             "DualSense feedback weak/strong source ordering preserved");
 
-        // WinJoyCon2's proven mapping: pin Pro2 native carriers 0x187/0x112,
-        // carry amplitude via HFA lookup (HF) and linear 101-step (LF).
+        // Independent source oracle: Joy-Con frequency code and SDL amplitude
+        // lookup; protocol controls remain an explicitly unvalidated proxy.
+        var quiet = Switch1RumbleConverter.Decode(new byte[] { 0, 3, 0xc0, 0x40 });
+        ushort firstStep = (ushort)((514u * 29000u + 32767u) / 65535u);
+        check(quiet.LowHz == 160 && quiet.HighHz == 320 &&
+            quiet.LowAmplitude == firstStep && quiet.HighAmplitude == firstStep,
+            "Pro1 first nonzero amplitude uses precise SDL inverse rather than rounded milli-units");
         byte[] source = [0xfc, 0xc9, 0xff, 0x71, 0, 1, 0x40, 0x40, 1, 0];
-        check(Switch1RumbleConverter.TryMap(source, out var mapped, out _) &&
-            mapped.ConversionTelemetry.Contains("winjoycon2-jc1_block_to_jc2"),
-            "Pro1 mapping uses the WinJoyCon2 port");
-        // Both actuators, all three subframes carry the native fixed carriers.
-        foreach (int off in new[] { 2, 7, 12, 18, 23, 28 })
+        var sourceLeft = Switch1RumbleConverter.Decode(source);
+        check(sourceLeft.HighHz == 1253 && sourceLeft.LowHz == 626,
+            "Pro1 source decoder retains frequency above final proxy limit");
+        check(Switch1RumbleConverter.TryMap(source, out var mapped, out _) && mapped.FrequencyClamps == 0 &&
+            mapped.ConversionTelemetry.Contains("legacy_hz_proxy_unvalidated") &&
+            mapped.ConversionTelemetry.Contains("band_codes_are_exponents=true"),
+            "Pro1 conversion labels the mapping and never reports a clip it did not perform");
+        // A Switch 1 band code is an exponent (Hz = 10 * 2^(code/32)) and a Pro2
+        // control is unmeasured, so the only defensible conversion keeps both
+        // validated Pro2 references and carries amplitude alone. Feeding the
+        // source Hz in as a control is the unit error that made Pro1 feel ordinary.
+        check((Read(mapped.Report, 2) & 1023) == Pro2RumbleFrequencyPolicy.ReferenceHighControl &&
+            ((Read(mapped.Report, 2) >> 20) & 1023) == Pro2RumbleFrequencyPolicy.ReferenceLowControl,
+            "Pro1 conversion keeps both Pro2 band references instead of a Hz-as-control proxy");
+        check((Read(mapped.Report, 18) & 1023) == Pro2RumbleFrequencyPolicy.ReferenceHighControl &&
+            ((Read(mapped.Report, 18) >> 20) & 1023) == Pro2RumbleFrequencyPolicy.ReferenceLowControl,
+            "Pro1 conversion applies the same references to the right actuator");
+        check(Pro2RumbleFrequencyPolicy.FromEstimatedHz(double.NaN) == 40 &&
+            Pro2RumbleFrequencyPolicy.FromEstimatedHz(900) == 511 &&
+            Pro2RumbleFrequencyPolicy.FromEstimatedHz(160.5) == 161,
+            "shared proxy handles nonfinite, out-of-range and half-step inputs deterministically");
+
+        // The Switch 1 band code is an exponent, not a linear control:
+        // dekuNukem's rumble_data_table gives Hz = 10 * 2^(code / 32), so adding
+        // 0x20 to the code doubles the frequency. Any conversion that feeds the
+        // decoded Hz into a ten-bit Pro2 control is therefore off by a whole
+        // dimension, which is exactly why Pro1 mode used to feel ordinary.
+        check(Switch1RumbleConverter.Frequency(96) == 80 &&
+            Switch1RumbleConverter.Frequency(128) == 160 &&
+            Switch1RumbleConverter.Frequency(160) == 320 &&
+            Switch1RumbleConverter.Frequency(192) == 640,
+            "band code is a doubling exponent at the documented 0x20 step");
+        check(Pro2RumbleFrequencyPolicy.FromEstimatedHz(
+                Switch1RumbleConverter.Frequency(192)) == Pro2RumbleFrequencyPolicy.MaximumLegacyControl,
+            "the discarded Hz-as-control path would have clipped a 640 Hz band to the ten-bit ceiling");
+        foreach (byte code in new byte[] { 0x04, 0x40, 0x60, 0xFC })
         {
-            check((Read(mapped.Report, off) & 1023) == 0x187 &&
-                 ((Read(mapped.Report, off) >> 20) & 1023) == 0x112,
-                "Pro2 native carriers 0x187/0x112 pinned at subframe " + off);
+            byte[] frame = [code, 0xC8, code, 0x72, 0, 1, 0x40, 0x40, 1, 0];
+            check(Switch1RumbleConverter.TryMap(frame, out var probe, out _) &&
+                (Read(probe.Report, 2) & 1023) == Pro2RumbleFrequencyPolicy.ReferenceHighControl &&
+                ((Read(probe.Report, 2) >> 20) & 1023) == Pro2RumbleFrequencyPolicy.ReferenceLowControl,
+                "source band code never becomes a ten-bit Pro2 control " + code);
         }
-        // A Pro1 max-amplitude block must produce a strong Pro2 amplitude, not a
-        // weak one: full HFA key 0xC8 -> 65535 -> 29000 and LF 0x72 -> 29000.
-        byte[] loud = [0x00, 0xC8, 0x40, 0x72, 0, 1, 0x40, 0x40, 1, 0];
-        check(Switch1RumbleConverter.IsNeutral(new byte[] { 0, 1, 0x40, 0x40 }),
-            "JC1 neutral 00 01 40 40 detected regardless of frequency code");
-        check(Switch1RumbleConverter.HfAmp16(0xC8) == 65535 &&
-            Switch1RumbleConverter.LfAmp16(0x72) == 65535,
-            "max JC1 HF/LF amplitude maps to full 65535 scale");
-        check(Switch1RumbleConverter.LfAmp16(0x40) == 0 && Switch1RumbleConverter.LfAmp16(0x59) == 65535.0 * 50 / 100,
-            "LF amplitude is linear across its 101 steps");
-        // Reference value from WinJoyCon2's jc1_block_to_jc2 for 00 C8 40 72:
-        // HFA[0xC8]=65535 and LF linear=65535 -> encode_jc2 -> 87 15 27 51 71,
-        // packed HF/LF amplitude 28992. Match the proven implementation byte for byte.
-        byte[] refFrame = Switch1RumbleConverter.EncodeJc2(65535, 65535);
-        check(refFrame.SequenceEqual(new byte[] { 0x87, 0x15, 0x27, 0x51, 0x71 }),
-            "encode_jc2 full-scale matches WinJoyCon2 reference bytes 87 15 27 51 71");
-        check(Switch1RumbleConverter.TryMap(loud, out var loudPacket, out _) && loudPacket.Active &&
-            loudPacket.Report.AsSpan(2, 5).SequenceEqual(refFrame),
-            "full Pro1 amplitude maps to Pro2 exactly as WinJoyCon2 does");
         byte[] neutralSource = [0, 1, 0x40, 0x40, 0, 1, 0x40, 0x40, 1, 0];
         check(Switch1RumbleConverter.TryMap(neutralSource, out var sourceStopped, out _) && !sourceStopped.Active,
             "Pro1 neutral frame still stops the physical actuator");

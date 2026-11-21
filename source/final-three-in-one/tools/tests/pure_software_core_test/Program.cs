@@ -123,7 +123,6 @@ internal static class Program
                 NativeRumblePacerRegressionTests.Run(Check);
                 RecentSessionEvidenceRegressionTests.Run(Check);
                 DualSenseFeedbackRoutingRegressionTests.Run(Check);
-                HdRumbleHoldRegressionTests.Run(Check);
                 ConvertedRumbleEncodingRegressionTests.Run(Check);
                 ConvertedRumbleTimingRegressionTests.Run(Check);
                 RumbleHoldAndPacingRegressionTests.Run(Check);
@@ -206,7 +205,6 @@ internal static class Program
             NativeRumbleMetricsRegressionTests.Run(Check);
             NativeRumblePacerRegressionTests.Run(Check);
             RecentSessionEvidenceRegressionTests.Run(Check);
-            HdRumbleHoldRegressionTests.Run(Check);
             ConvertedRumbleEncodingRegressionTests.Run(Check);
             ConvertedRumbleTimingRegressionTests.Run(Check);
             RumbleHoldAndPacingRegressionTests.Run(Check);

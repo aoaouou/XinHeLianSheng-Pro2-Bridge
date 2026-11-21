@@ -154,10 +154,7 @@ public sealed partial class Pro2BleInputSource :
                 " fd2_hz=" + liveFd2RateHz.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             connectionProgress?.Report("[PRO2_RUMBLE_QUEUE] " + rumbleQueue.Telemetry);
             lock (writeGate)
-            {
                 connectionProgress?.Report("[PRO2_RUMBLE_HOLD] " + ordinaryRumbleHold.Telemetry);
-                connectionProgress?.Report("[PRO2_RUMBLE_HD_HOLD] " + hdRumbleHold.Telemetry);
-            }
         }
         if (downgraded) SetConnectionPhase(Pro2ConnectionPhase.RateLimited);
         if (recovered)
@@ -280,7 +277,6 @@ public sealed partial class Pro2BleInputSource :
     private readonly Pro2RumbleOutputQueue rumbleQueue = new();
     private readonly NativeRumbleTransportMetrics rumbleTransportMetrics = new();
     private readonly OrdinaryRumbleHoldState ordinaryRumbleHold = new();
-    private readonly HdRumbleHoldState hdRumbleHold = new();
     private volatile string rumblePacerBackend = "not_started";
     private uint rumbleNativeQueuedCount;
     private uint rumbleNativeWrittenCount;
@@ -509,7 +505,6 @@ public sealed partial class Pro2BleInputSource :
             if (rumbleGain == nextGain) return;
             rumbleGain = nextGain;
             ordinaryRumbleHold.Invalidate();
-            hdRumbleHold.Invalidate();
             if (rumbleWriterTask is { IsCompleted: false } && rumbleSignal != null &&
                 rumbleQueue.StopForGainChange(Stopwatch.GetTimestamp()))
             {
@@ -1258,11 +1253,6 @@ public sealed partial class Pro2BleInputSource :
                     rumbleQueue.Enqueue(packet, false, received, source, safetyStop: !encoded);
                 }
                 ordinaryRumbleHold.Observe(packet, source, native, encoded);
-                // HD path (native Pro2 and converted Pro1/PS5 HD) keeps the
-                // last state alive on the LRA, matching WinJoyCon2's tuned
-                // cadence. Observe() itself excludes ordinary Xbox/DS5 sources,
-                // so the two hold mechanisms never generate competing packets.
-                hdRumbleHold.Observe(packet, source, encoded, received);
                 rumbleQueuedCount++;
                 rumbleCoalescedCount = (uint)(rumbleQueue.Replaced + rumbleQueue.AdaptiveDropped);
                 if (native)
@@ -3732,7 +3722,6 @@ public sealed partial class Pro2BleInputSource :
         {
             rumbleQueue.Reset();
             ordinaryRumbleHold.Reset();
-            hdRumbleHold.Reset();
             rumbleTransportMetrics.Reset();
             rumbleNativeQueuedCount = rumbleNativeWrittenCount = 0;
             rumbleNativeMismatchCount = rumbleNativeScaledCount = 0;
@@ -3769,22 +3758,8 @@ public sealed partial class Pro2BleInputSource :
             double refreshDueMs;
             lock (writeGate)
             {
-                // WinJoyCon2's hold cadence applies to the HD (native and
-                // converted) path too: without it a sparse host report lets the
-                // LRA decay to a thin tap. Ordinary Xbox/DS5 state keeps its own
-                // 12 ms hold.
-                long nowTicks = Stopwatch.GetTimestamp();
                 refreshActive = ordinaryRumbleHold.Active;
-                refreshDueMs = ordinaryRumbleHold.MillisecondsUntilDue(nowTicks);
-                if (hdRumbleHold.Active)
-                {
-                    refreshActive = true;
-                    double hdDue = Math.Max(0, hdRumbleHold.MillisecondsUntilDue(nowTicks));
-                    if (double.IsNaN(hdDue) || hdDue < 0) hdDue = 0;
-                    refreshDueMs = double.IsInfinity(refreshDueMs)
-                        ? hdDue
-                        : Math.Min(refreshDueMs, hdDue);
-                }
+                refreshDueMs = ordinaryRumbleHold.MillisecondsUntilDue(Stopwatch.GetTimestamp());
             }
             // One timed wake in the existing writer, not an independent timer
             // producer. Cancel and join the loser so a leftover signal waiter
@@ -3821,17 +3796,11 @@ public sealed partial class Pro2BleInputSource :
             Pro2QueuedRumble? queued;
             lock (writeGate)
             {
-                long nowTicks = Stopwatch.GetTimestamp();
                 rumbleQueue.ConfigureServiceBudget(Math.Max(minimumWriteIntervalMs, observedNativeServiceMs));
-                rumbleQueue.TryDequeue(nowTicks, out queued);
+                rumbleQueue.TryDequeue(Stopwatch.GetTimestamp(), out queued);
                 if (queued == null)
-                {
-                    bool sourcePending = rumbleQueue.Count > 0;
-                    if (!ordinaryRumbleHold.TryCreate(nowTicks, sourcePending,
-                            (byte)(rumblePacketId++ & 15), out queued))
-                        hdRumbleHold.TryCreate(nowTicks, sourcePending,
-                            (byte)(rumblePacketId++ & 15), out queued, out _);
-                }
+                    ordinaryRumbleHold.TryCreate(Stopwatch.GetTimestamp(), sourcePending: false,
+                        (byte)(rumblePacketId++ & 15), out queued);
             }
             if (queued == null)
             {
@@ -3855,12 +3824,6 @@ public sealed partial class Pro2BleInputSource :
                         ordinaryRumbleHold.RefreshSuperseded();
                         continue;
                     }
-                    if (queued.GeneratedKind is "hd_hold" or "hd_hold_stop" &&
-                        !hdRumbleHold.IsCurrent(queued))
-                    {
-                        hdRumbleHold.RefreshSuperseded();
-                        continue;
-                    }
                     // Start the GATT call while holding the producer lock.
                     // A stop accepted after this point cannot retract an already
                     // in-flight write, but it cancels every not-yet-started refresh.
@@ -3873,11 +3836,7 @@ public sealed partial class Pro2BleInputSource :
                 rumbleQueue.MarkWriteResult(queued, success);
                 rumbleTransportMetrics.ObserveWrite(queued.EnqueuedTicks, writeStarted, completed, success,
                     queued.Native, queued.Data, queued.GeneratedKind);
-                lock (writeGate)
-                {
-                    ordinaryRumbleHold.Written(queued, success, completed, writeStarted);
-                    hdRumbleHold.Written(queued, success);
-                }
+                lock (writeGate) ordinaryRumbleHold.Written(queued, success, completed, writeStarted);
                 if (!success) rumbleQueue.TryEnqueueFailureStop(queued, completed);
                 {
                     // Estimate service cadence only when work was already waiting.
@@ -3937,7 +3896,6 @@ public sealed partial class Pro2BleInputSource :
                 lock (writeGate)
                 {
                     ordinaryRumbleHold.Written(queued, false, Stopwatch.GetTimestamp());
-                    hdRumbleHold.Written(queued, false);
                     rumbleQueue.TryEnqueueFailureStop(queued, Stopwatch.GetTimestamp());
                     rumbleFailureCount++;
                 }
@@ -3958,7 +3916,7 @@ public sealed partial class Pro2BleInputSource :
 
     private async Task StopRumbleWriterAsync(bool allowFinalNeutral = true)
     {
-        lock (writeGate) { ordinaryRumbleHold.Invalidate(); hdRumbleHold.Invalidate(); }
+        lock (writeGate) ordinaryRumbleHold.Invalidate();
         CancellationTokenSource? writerCts = rumbleWriterCts;
         Task? writerTask = rumbleWriterTask;
         SemaphoreSlim? signal = rumbleSignal;
@@ -4026,12 +3984,9 @@ public sealed partial class Pro2BleInputSource :
                 " pacer=" + rumblePacerBackend);
             connectionProgress?.Report("[PRO2_RUMBLE_QUEUE] final=true " + rumbleQueue.Telemetry);
             lock (writeGate)
-            {
                 connectionProgress?.Report("[PRO2_RUMBLE_HOLD] final=true " + ordinaryRumbleHold.Telemetry);
-                connectionProgress?.Report("[PRO2_RUMBLE_HD_HOLD] final=true " + hdRumbleHold.Telemetry);
-            }
         }
-        lock (writeGate) { rumbleQueue.Reset(); ordinaryRumbleHold.Reset(); hdRumbleHold.Reset(); }
+        lock (writeGate) { rumbleQueue.Reset(); ordinaryRumbleHold.Reset(); }
         signal?.Dispose();
         writerCts?.Dispose();
     }
