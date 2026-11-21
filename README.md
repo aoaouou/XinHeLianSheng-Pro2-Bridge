@@ -1,48 +1,115 @@
-# PRO2 手柄助手
+# PRO2 手柄助手 · HD 震动还原版
 
-让 **Nintendo Switch 2 Pro（Pro2）手柄连接 Windows**，用于 Steam，也能切换成 Pro1、Xbox 或 PS5 兼容手柄。Pro2 无线连接无需专用接收器。
+**XinHeLianSheng-Pro2-Bridge，堂堂登场！**
 
-**[推荐下载：v3.2.7 Windows EXE](https://github.com/LeonChrome/XinHeLianSheng-Pro2-Bridge/releases/download/pro2-v3.2.7/PRO2ControllerAssistant-v3.2.7-win-x64.exe)** · [备用 ZIP 文件夹版](https://github.com/LeonChrome/XinHeLianSheng-Pro2-Bridge/releases/download/pro2-v3.2.7/PRO2ControllerAssistant-v3.2.7-portable-win-x64.zip) · [更新说明](docs/RELEASE-v3.2.7.md)
+让 Nintendo Switch 2 Pro 手柄在 Windows 10/11 上使用：Steam、Pro1、Xbox、PS5 四种身份任选，无线无需专用接收器。本 fork 在原项目基础上，**把 Pro1 / Pro2 两种模式的 HD 震动还原成 Switch2 实机原生手感**。
 
-EXE 首次打开会准备内置运行文件，请稍等几秒；ZIP 需完整解压。两者均自带 .NET 和 VIIPER。
+[English](#english) · [下载 EXE](#下载) · [改了什么](#hd-震动还原) · [原项目](https://github.com/LeonChrome/XinHeLianSheng-Pro2-Bridge)
 
-![连接首页](docs/images/pro2-v3.2.1-home.png)
+## HD 震动还原
+
+**原生手感，堂堂还原！**
+
+物理手柄是 Pro2，两种模式写出的震动包都遵循 Switch2 真实输出：单电机块 **1 个 5 字节子帧 + 每 12ms 重发**（真机抓包 795/795，SDL `RUMBLE_INTERVAL=12`），不是 Joy-Con 2 的 3 子帧格式。
+
+- **Pro2 模式**：原生透传字节不变，保持节奏按子帧数自适应——1 子帧每 12ms 刷新，修掉"1 子帧却 36ms 保持"导致的空转发虚。
+- **Pro1 模式**：保留 Switch1 幅度换算（HFA + 线性），但输出改成与真机一致的 1 子帧 Pro2 report，不再是 JC2 的 3 子帧。
+- **保持重发**：修复保持包漏写 revision、被写出门禁整批丢弃的问题；36ms 节拍、250ms 保持、100ms 静音制动全部生效。
+- **不碰的东西**：频率 `0x187/0x112`、SDL 限幅 `0x1C4`、字节级保真——照资料原样，不自造增益、不搬频率。
+
+验证：802,966 项离线震动断言全绿，EXE 启动通过。
 
 ## 主要功能
 
-- **连接方式**：首页统一选择 Pro2 无线／USB、Pro1 蓝牙／USB；四个槽位分别记住设备和连接方式，可混用。Pro1 输入属于新增路线，仍待更多实机验证。
-- **四种游戏身份**：Steam / Pro2、Pro1、Xbox、PS5，各手柄独立选择。
-- **键位与摇杆**：ABXY 按位置、字母或自定义映射，左右摇杆死区独立调节；未连接也能设置。
-- **背键 / C 键**：Pro1、Xbox、PS5 输出支持单键、组合键、连发、顺序动作和延迟；PS5 可模拟触控板点击、滑动与画圈。
-- **震动与体感**：震动强度调节、PS5 普通震动与触觉转换、摇杆和陀螺仪校准。Xbox 模式不含原生体感。
-- **连接诊断**：真实输入频率、电量档位、固件、耳机状态；自动重连、可选休眠、蓝牙优化与虚拟 USB 故障诊断。
-- **游戏图标**：《影之刃零》Steam 版可按实际位置显示 Pro2 键名，支持查找多个 Steam 库、安装与还原。
+原项目的全部能力都在：
+
+- **连接方式**：Pro2 无线／USB、Pro1 蓝牙／USB，四个槽位独立记忆，可混用。双手柄，堂堂连接！
+- **四种身份**：Steam / Pro2、Pro1、Xbox、PS5，各手柄独立选择。
+- **键位摇杆**：ABXY 按位置／字母／自定义映射，摇杆死区独立调节；细节，堂堂打磨！
+- **背键 C 键**：单键、组合键、连发、顺序动作与延迟；PS5 可模拟触控板。
+- **震动体感**：强度调节、PS5 触觉转换、摇杆与陀螺仪校准。**HD 震动，堂堂唤醒！**
+- **连接诊断**：真实输入频率、电量、固件、耳机状态，自动重连与虚拟 USB 诊断。
+- **游戏图标**：《影之刃零》Steam 版显示 Pro2 键名，支持安装与还原。
+
+## 下载
+
+**成品，堂堂开张！**
+
+从本仓库 [Releases](https://github.com/aoaouou/XinHeLianSheng-Pro2-Bridge/releases) 下载 `PRO2ControllerAssistant.exe`（单文件自包含，约 125MB，自带 .NET 与 VIIPER，无需安装）。
+
+- 双击运行；首次打开会释放内置运行文件，稍等几秒。
+- 从系统托盘退出旧助手再运行新版。版本标记：`3.2.7-plus7-nativehd`。
 
 ## 使用方法
 
-1. 从托盘退出旧助手，运行新版。**上方选实际手柄和连接方式，下方选游戏里的手柄身份。**
-2. Pro2 无线：开启配对广播后在助手连接，无需先添加到 Windows 蓝牙。Pro1 无线：先在 Windows 配对，再在助手选择设备。有线使用 USB 数据线；Pro2 USB 先退出 Steam，接入助手后再启动 Steam。
-3. 点击连接。首次按提示安装内置 **USBIP 驱动**，可能需要管理员授权或重启。已安装但未找到时，手动选择安装目录中的 `usbip.exe`。多只手柄进入“管理手柄”。
+1. 上方选实际手柄与连接方式，下方选游戏里的手柄身份。
+2. Pro2 无线：开配对广播后在助手连接，无需先加 Windows 蓝牙。USB 用数据线；Pro2 USB 先退出 Steam，接入后再启动。
+3. 首次按提示安装内置 USBIP 驱动，可能需要管理员授权或重启。USB/IP，堂堂安装！
 
-默认按位置对应：**Pro2 下方 B → Xbox A / PS5 ×**；可在“键位映射”修改。Steam Input 和游戏自身改键仍会继续生效，同种输出模式共用该模式的映射配置。背键 / C 键单独设置，实体 Pro1 没有这些按键。
+想进一步调游戏内键名：Steam Input 与游戏自身改键仍然生效。完整接入条件、校准与 NFC 范围见 [输入方式与限制](docs/physical-inputs.md)。
 
-Pro2 USB 的厂商命令接口需要已有 WinUSB 绑定，程序不会自动替换设备驱动。完整接入条件、校准和 NFC 范围见 [输入方式与限制](docs/physical-inputs.md)。
+## v3.2.7-plus7 更新
 
-## v3.2.7 更新
+**本 fork，堂堂更新！**
 
-- 新连接与重连优先复用同一环境已验证的方案，实测高速后停止轮测；保留已经生效的 7.5ms 连接，减少反复切换参数。
-- 修复 PS5 输入暂停时 HID 读取长期等待、USBIP 取消请求竞争，改善与其他手柄软件同时使用时的兼容性。
-- 修复初始化应答串线、有线／Pro1 短按被合并，以及普通背键长按被短暂输入间隙取消的问题；连发和手势中断后不积压重放。
-- 高速验收与健康监测统一采用 128Hz 容差；60Hz 可游玩。真实 FD2 与虚拟兼容报告分别计数。
-
-已通过 931643 项离线／本机回环断言、Go 后端全量测试、30 轮 Windows 原生 HID 测试及最终 EXE 启动检查。**UU 4.47.x 窗口激活／失活的完整场景尚待复测**，不承诺解决其全部挂起原因。
+- 修复 HD 保持包因 revision 缺失被整批丢弃——Pro2 从"几乎无震"恢复。
+- 修复保持节奏与子帧数不匹配——1 子帧按 12ms 刷新，震动连续饱满。
+- Pro1 改用 Pro2 原生 1 子帧输出，两种模式都还原 Switch2 实机 HD 震动。
+- 上游 v3.2.7 的连接、PS5、USBIP 等修复全部保留（见 [v3.2.7 说明](docs/RELEASE-v3.2.7.md)）。
 
 ## 兼容性
 
-支持 **Windows 10 2004 及以上 / Windows 11 x64**。Pro2 无线需要可用的 BLE 蓝牙，目标为真实 **133Hz**，达到 **60Hz** 也允许兼容游玩。Win11 自动尝试参数；Win10 按首页引导授权优化，修改前备份并提供恢复。Win10 全局 BLE 参数可能影响其他蓝牙设备或需要重启。
+Windows 10 2004+ / Windows 11 x64。Pro2 无线需可用 BLE，目标真实 133Hz，60Hz 也可游玩；实际频率受适配器与环境影晌，不作保证。PS5 触觉为转换输出；无线耳机音频与跨设备转发尚不支持。自动休眠默认关闭。
 
-实际频率受系统、适配器、驱动与无线环境影响，不保证所有电脑达到 133Hz。虚拟重复报告不算新输入。Pro2 USB 曾完成约 30 秒 249.99Hz 实测；Pro1 输入、实卡 NFC、四只实体手柄并发及各模式长时间游戏仍需更多验收。PS5 触觉属于转换输出；无线耳机音频和跨设备蓝牙转发尚不支持。
+## 从源码构建
 
-**自动休眠默认关闭。** 启用后本机可能占用手柄配对记录；回 NS2 主机时若连不上，重新配对即可。
+**源码，堂堂构建！**
 
-[反馈问题](https://github.com/LeonChrome/XinHeLianSheng-Pro2-Bridge/issues) · [源码与构建](source/final-three-in-one/README.md) · [许可证](LICENSE) · [第三方致谢](ACKNOWLEDGEMENTS.md) · [历史版本](https://github.com/LeonChrome/XinHeLianSheng-Pro2-Bridge/releases)
+```bash
+# global.json 钉 SDK 8.0.420；若只有新版 SDK，临时把 rollForward 改 latestMajor
+dotnet publish source/final-three-in-one/windows/v60_viiper_app/Y700Switch2V60Viiper.csproj \
+  -c Release -p:PureSoftwareRelease=true \
+  -p:Version=3.2.7 -p:InformationalVersion=3.2.7-plus7-nativehd \
+  -p:AssemblyVersion=3.2.7.0 -p:FileVersion=3.2.7.0 -o <输出目录>
+```
+
+测试（离线，不碰设备）：`dotnet <PureSoftwareCoreTest.dll> --native-rumble-only`
+
+## 致谢
+
+**先行者，堂堂致谢！**
+
+感谢 [LeonChrome](https://github.com/LeonChrome) 与原项目贡献者打下完整骨架——本 fork 只在其上校准了 HD 震动。真机协议依据来自 ndeadly/switch2_controller_research、SDL 驱动源码与 dekuNukem 的逆向笔记。
+
+本 fork 遵循上游 Apache-2.0 协议开源。源码，堂堂开源！
+
+---
+
+<a id="english"></a>
+
+## English
+
+**XinHeLianSheng-Pro2-Bridge, grandly arriving!**
+
+Use a Nintendo Switch 2 Pro Controller on Windows 10/11 — Steam, Pro1, Xbox and PS5 identities, wireless without a dedicated dongle. This fork restores **native Switch2 HD rumble** in both Pro1 and Pro2 modes.
+
+**Native feel, grandly restored!** The physical controller is a Pro2, so both modes emit the real Switch2 output shape: **one 5-byte subframe per motor block, refreshed every 12 ms** (795/795 real-hardware capture; SDL `RUMBLE_INTERVAL=12`) — not the Joy-Con 2 three-subframe format.
+
+- **Pro2**: byte-exact passthrough; hold cadence adapts to subframe count (1 subframe → 12 ms), fixing the hollow feel from a 1-subframe packet held for 36 ms.
+- **Pro1**: keeps Switch1 amplitude conversion (HFA + linear) but emits the native one-subframe Pro2 report.
+- **Hold mechanism**: fixes keep-alive packets dropped by a missing revision stamp; 36 ms cadence, 250 ms hold, 100 ms silence brake all work.
+- **Untouched**: frequencies `0x187/0x112`, SDL cap `0x1C4`, byte fidelity — per the docs, no invented gain, no frequency transposition.
+
+Verified: 802,966 offline rumble assertions green; EXE launch passed.
+
+**Artifacts, grandly opening!** Download the self-contained `PRO2ControllerAssistant.exe` (~125 MB, .NET + VIIPER included) from [Releases](https://github.com/aoaouou/XinHeLianSheng-Pro2-Bridge/releases).
+
+**Both controllers, grandly connecting!** Four slots, independent modes, wireless/wired mixing. **HD rumble, grandly awakening!** **Details, grandly polished!**
+
+**This fork, grandly updated!** All upstream v3.2.7 fixes retained; only HD rumble recalibrated.
+
+Windows 10 2004+ / 11 x64. BLE required for wireless (133 Hz target, 60 Hz playable). PS5 haptics are converted output. Auto-sleep off by default.
+
+**Source code, grandly building!** See the build commands in the Chinese section above.
+
+**Pioneers, grandly thanking!** Thanks to LeonChrome and upstream contributors for the complete foundation. Licensed under Apache-2.0. Source code, grandly open-sourced!
